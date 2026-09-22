@@ -1,0 +1,20 @@
+APK: /Users/onionjust/Downloads/短信转邮件-0.2.0-测试版.apk
+SHA-256: 3a1596bba1bcf816f7550ddb5c848ed820478f23912695d1554578403b4107d5
+Size: 18806103 bytes
+Package: cn.smsmail.forwarder
+Version name: 0.2.0
+Version code: 3
+Minimum SDK: 26 (Android 8.0)
+Target SDK: 37 (Android 17)
+
+apksigner verify --verbose:
+Verifies
+Verified using v1 scheme (JAR signing): false
+Verified using v2 scheme (APK Signature Scheme v2): true
+Verified using v3 scheme (APK Signature Scheme v3): false
+Verified using v3.1 scheme (APK Signature Scheme v3.1): false
+Verified using v4 scheme (APK Signature Scheme v4): false
+Verified for SourceStamp: false
+Number of signers: 1
+
+Signing: Android Debug signing for private device acceptance only; a release build requires an independent release key.

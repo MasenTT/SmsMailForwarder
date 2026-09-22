@@ -1,0 +1,17 @@
+.gradle/
+.kotlin/
+**/build/
+local.properties
+*.jks
+*.keystore
+
+# Local verification output and device data
+docs/runtime-evidence/
+docs/test-results/
+docs/coverage/*
+!docs/coverage/README.md
+docs/*.log
+docs/ui-state.xml
+*.db
+*.db-shm
+*.db-wal

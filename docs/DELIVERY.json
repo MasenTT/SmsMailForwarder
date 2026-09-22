@@ -1,0 +1,20 @@
+{
+  "file": "短信转邮件-0.2.1-调试版.apk（项目外部交付文件）",
+  "bytes": 18830059,
+  "sha256": "ca8af043d73e631c23f045863239783998431ea3a94c999f07a692171c640c57",
+  "sourceArchive": "SmsMailForwarder-0.2.1-source.zip（项目外部交付文件）",
+  "sourceBytes": 3493887,
+  "sourceSha256": "ac9a6e125da0d11b85eaf108d3b4c6ad3e662c2f087410a4982be92424198baf",
+  "sourceArchiveNote": "为避免清单自引用，源码压缩包不含 docs/DELIVERY.json；清单与压缩包并列提供。",
+  "version": "0.2.1",
+  "versionCode": 4,
+  "databaseVersion": 3,
+  "package": "cn.smsmail.forwarder",
+  "minimumAndroid": "8.0 (API 26)",
+  "targetApi": 36,
+  "signing": "Android Debug / APK Signature v2",
+  "buildLog": "项目外部交付日志：SmsMailForwarder-0.2.1-build.log",
+  "validationLog": "项目外部交付日志：SmsMailForwarder-0.2.1-final-validation.log",
+  "signatureReport": "项目外部交付记录：SmsMailForwarder-0.2.1-apk-signature.txt",
+  "status": "39 automated tests passed; 17/17 Android emulator tests and Lint passed; DATA_SMS_RECEIVED compatibility listener included; user reports normal forwarding restored; notification/OTP and real-mailbox acceptance pending"
+}
