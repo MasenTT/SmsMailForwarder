@@ -3,8 +3,8 @@
   "bytes": 18890495,
   "sha256": "f92d90efce7a6e1ecf30136a528cb9c27bb29f95e45345c6e068a4dbc2bc15df",
   "sourceArchive": "SmsMailForwarder-0.2.2-source.zip（Downloads 交付文件）",
-  "sourceBytes": 3367695,
-  "sourceSha256": "70fadd920fac617e743bda112cf526545f573f798b222b498cf15d13a452798c",
+  "sourceBytes": 3367701,
+  "sourceSha256": "89dfc5c4878961f595398f3afc2d09f09be4653b2196fa470f1999eb368a0574",
   "sourceArchiveNote": "源码包包括本次源码、测试、计划及说明文件，但不包含 docs/DELIVERY.json，以避免交付清单自引用；该 JSON 与源码包并列保存在项目和 Downloads。",
   "version": "0.2.2",
   "versionCode": 5,
@@ -24,5 +24,8 @@
   },
   "lint": "0 errors, 21 warnings/recommendations",
   "emulatorInstall": "Android 15 SmsMailTest: upgrade install and cold launch passed",
-  "status": "MMS MIME attachments, subject routing, encrypted local storage, database migration, build, lint, and automated tests passed. Xiaomi 14 real-carrier MMS receive/download and actual mailbox delivery remain unverified. GitHub update pending; no Gitee repository is configured or confirmed."
+  "githubRepository": "https://github.com/MasenTT/SmsMailForwarder",
+  "githubBranch": "main",
+  "githubPublication": "Published on 2026-09-23; user requested GitHub only for now.",
+  "status": "MMS MIME attachments, subject routing, encrypted local storage, database migration, build, lint, and automated tests passed. Source is published on GitHub. Xiaomi 14 real-carrier MMS receive/download and actual mailbox delivery remain unverified."
 }
