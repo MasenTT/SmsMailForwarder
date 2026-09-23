@@ -49,7 +49,7 @@ class FingerprintMigrationTest {
             old.version = 1
         }
         val database = Room.databaseBuilder(context, MailDatabase::class.java, name)
-            .addMigrations(fingerprintMigration(crypto), contactMigration("default@example.com")).build()
+            .addMigrations(fingerprintMigration(crypto), contactMigration("default@example.com"), mmsMigration()).build()
         val settings = Settings(context, crypto)
         val previousEnabled = settings.enabled
         val previousDefaults = settings.defaults

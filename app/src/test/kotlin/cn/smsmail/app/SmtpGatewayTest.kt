@@ -8,7 +8,11 @@ import org.junit.Test
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.security.KeyStore
+import java.util.Properties
 import javax.net.ssl.*
+import javax.mail.Session
+import javax.mail.internet.MimeMessage
+import javax.mail.internet.MimeMultipart
 import kotlin.concurrent.thread
 
 /** Disposable local certificate and credentials. Never connects to an external mail service. */
@@ -26,7 +30,7 @@ class SmtpGatewayTest {
         SSLContext.setDefault(trusted)
     }
     @After fun restore() { SSLContext.setDefault(original) }
-    private fun send(mode: String, security: String = "SSL"): MailResult {
+    private fun send(mode: String, security: String = "SSL", attachments: List<MailAttachment> = emptyList(), captured: StringBuilder? = null): MailResult {
         val server = if (security == "SSL") trusted.serverSocketFactory.createServerSocket(0, 1, InetAddress.getLoopbackAddress()) else ServerSocket(0, 1, InetAddress.getLoopbackAddress())
         server.soTimeout = 5000
         val serving = thread(isDaemon = true) {
@@ -54,7 +58,9 @@ class SmtpGatewayTest {
                             line.startsWith("RCPT TO") -> reply(if (mode == "recipient") "550 5.1.1 Unknown user" else "250 OK")
                             line == "DATA" -> {
                                 reply("354 End with dot")
-                                while (true) { val body = reader.readLine() ?: break; if (body == ".") break }
+                                val messageLines = mutableListOf<String>()
+                                while (true) { val body = reader.readLine() ?: break; if (body == ".") break; messageLines += body }
+                                captured?.append(messageLines.joinToString("\n"))
                                 if (mode == "disconnect") break else reply("250 Queued")
                             }
                             line == "QUIT" -> { reply("221 Bye"); break }
@@ -65,7 +71,7 @@ class SmtpGatewayTest {
             } catch (_: Exception) { /* Rejected TLS is an expected test scenario. */ }
         }
         return try {
-            SmtpGateway().send(MailConfig("localhost", server.localPort, security, "sender@example.com", "test-only"), "recipient@example.com", "测试通知", "中文\n多行短信")
+            SmtpGateway().send(MailConfig("localhost", server.localPort, security, "sender@example.com", "test-only"), "recipient@example.com", "测试通知", "中文\n多行短信", attachments)
         } finally { server.close(); serving.join(6000) }
     }
     @Test fun startTlsSubmissionAccepted() { assertNull(send("success", "STARTTLS").kind) }
@@ -81,5 +87,28 @@ class SmtpGatewayTest {
     @Test fun missingAuthorizationRejectedBeforeNetwork() {
         val result = SmtpGateway().send(MailConfig("localhost", 465, "SSL", "sender@example.com", ""), "recipient@example.com", "test", "test")
         assertEquals(FailureKind.CONFIG, result.kind)
+    }
+    @Test fun sendsMmsAsMultipartWithNamedBinaryAttachment() {
+        val captured = StringBuilder()
+        val result = send("success", attachments = listOf(MailAttachment("photo.png", "image/png", byteArrayOf(1, 2, 3))), captured = captured)
+        assertNull(result.kind)
+        assertTrue(captured.contains("multipart/mixed"))
+        val message = MimeMessage(Session.getInstance(Properties()), captured.toString().byteInputStream())
+        val parts = message.content as MimeMultipart
+        assertTrue(parts.getBodyPart(0).content.toString().contains("多行短信"))
+        val attachment = parts.getBodyPart(1)
+        assertEquals("photo.png", attachment.fileName)
+        assertEquals("image/png", attachment.contentType.substringBefore(';'))
+        assertArrayEquals(byteArrayOf(1, 2, 3), attachment.inputStream.readBytes())
+    }
+    @Test fun attachmentFileNameCannotInjectMimeHeaders() {
+        val captured = StringBuilder()
+        val result = send("success", attachments = listOf(MailAttachment("photo.png\r\nX-Evil: yes", "image/png", byteArrayOf(1))), captured = captured)
+        assertNull(result.kind)
+        val message = MimeMessage(Session.getInstance(Properties()), captured.toString().byteInputStream())
+        val attachment = (message.content as MimeMultipart).getBodyPart(1)
+        assertNull(attachment.getHeader("X-Evil"))
+        assertTrue(attachment.fileName.startsWith("photo.png_"))
+        assertTrue(attachment.contentType.startsWith("image/png"))
     }
 }

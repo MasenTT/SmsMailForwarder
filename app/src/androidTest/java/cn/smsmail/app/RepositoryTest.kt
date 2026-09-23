@@ -23,6 +23,7 @@ class RepositoryTest {
     private val scheduled = mutableListOf<String>()
     private var result = MailResult(detail = "test accepted")
     private var calls = 0
+    private var sentAttachments = emptyList<MailAttachment>()
     @Before fun setup() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<MailApp>()
         context.getSharedPreferences("private_settings", 0).edit().clear().commit()
@@ -30,6 +31,9 @@ class RepositoryTest {
         crypto = Crypto(); settings = Settings(context, crypto)
         repo = Repository(context, db, settings, crypto, object : MailGateway {
             override fun send(config: MailConfig, recipient: String, subject: String, body: String): MailResult { calls++; return result }
+            override fun send(config: MailConfig, recipient: String, subject: String, body: String, attachments: List<MailAttachment>): MailResult {
+                calls++; sentAttachments = attachments; return result
+            }
         }, { scheduled.add(it) })
         settings.saveMail(MailConfig("smtp.example.com", 465, "SSL", "test@example.com", "fake-test-credential"))
         settings.defaults = "default@example.com"
@@ -143,6 +147,36 @@ class RepositoryTest {
         db.dao().clearDefaultLinks()
         repo.deleteContact(contact.id)
         assertNull(db.dao().contact(contact.id))
+    }
+
+    @Test fun mmsSubjectRoutesAndEncryptedAttachmentsSurviveDelivery() = runBlocking {
+        val contact = repo.saveContact(null, "账单联系人", "bill@example.com", "")
+        repo.saveRuleWithContacts(RuleRow("mms-subject", "账单彩信", "电子账单", "", true, 1L, RuleType.CUSTOM.name, RulePresets.VERSION), listOf(contact.id))
+        val attachment = MailAttachment("账单图片.png", "image/png", byteArrayOf(1, 2, 3, 4))
+        repo.accept("10690000", 1000L, "SIM1", "本月账单请查收", kind = MessageKind.MMS, subject = "电子账单", attachments = listOf(attachment))
+
+        val event = db.dao().observeEvents().first().single().event
+        assertEquals(MessageKind.MMS, event.kind)
+        assertEquals("电子账单", crypto.decrypt(event.subject))
+        assertNotEquals("账单图片.png", db.dao().attachments(event.id).single().fileName)
+        assertArrayEquals(attachment.bytes, crypto.decrypt(db.dao().attachments(event.id).single().content))
+        assertEquals("bill@example.com", db.dao().pending().single().recipient)
+
+        assertFalse(repo.deliver(db.dao().pending().single().id))
+        assertEquals("账单图片.png", sentAttachments.single().fileName)
+        assertEquals("image/png", sentAttachments.single().contentType)
+        assertArrayEquals(attachment.bytes, sentAttachments.single().bytes)
+    }
+
+    @Test fun mmsWithoutRuleMatchFallsBackToDefaultAndDuplicateIsIgnored() = runBlocking {
+        val attachment = MailAttachment("photo.jpg", "image/jpeg", byteArrayOf(5, 6, 7))
+        repeat(2) {
+            repo.accept("10690000", 2000L, "SIM1", "仅供查看", kind = MessageKind.MMS, subject = "通知", attachments = listOf(attachment))
+        }
+        val events = db.dao().observeEvents().first()
+        assertEquals(1, events.size)
+        assertEquals("default@example.com", db.dao().pending().single().recipient)
+        assertEquals(1, db.dao().attachments(events.single().event.id).size)
     }
 
     @Test fun smsDiagnosticStoresOnlyBroadcastMetadata() = runBlocking {

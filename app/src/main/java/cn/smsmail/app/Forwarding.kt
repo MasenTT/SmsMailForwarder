@@ -23,7 +23,7 @@ class MailApp : Application() {
     val crypto by lazy { Crypto() }
     val settings by lazy { Settings(this, crypto) }
     val database by lazy { Room.databaseBuilder(this, MailDatabase::class.java, "smsmail.db")
-        .addMigrations(fingerprintMigration(crypto), contactMigration(settings.defaults)).build() }
+        .addMigrations(fingerprintMigration(crypto), contactMigration(settings.defaults), mmsMigration()).build() }
     val repository by lazy { Repository(this, database, settings, crypto, SmtpGateway()) }
     override fun onCreate() {
         super.onCreate()
@@ -40,6 +40,9 @@ class Repository(private val context: Context, private val db: MailDatabase, val
     val contacts = dao.observeContacts()
     val defaultContacts = dao.observeDefaultContacts()
     fun hasSmsPermission() = ContextCompat.checkSelfPermission(context, Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED
+    fun hasReceiveMmsPermission() = ContextCompat.checkSelfPermission(context, Manifest.permission.RECEIVE_MMS) == PackageManager.PERMISSION_GRANTED
+    fun hasReadSmsPermission() = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED
+    fun hasMmsPermissions() = hasReceiveMmsPermission() && hasReadSmsPermission()
     suspend fun setEnabled(enabled: Boolean) {
         if (enabled) {
             require(context.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY)) { "当前设备不支持电话短信接收" }
@@ -101,8 +104,9 @@ class Repository(private val context: Context, private val db: MailDatabase, val
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS).build()
         WorkManager.getInstance(context).enqueueUniqueWork("send-$id", ExistingWorkPolicy.APPEND_OR_REPLACE, request)
     }
-    suspend fun accept(source: String, smsAt: Long, sim: String, body: String) {
+    suspend fun accept(source: String, smsAt: Long, sim: String, body: String, kind: String = MessageKind.SMS, subject: String = "", attachments: List<MailAttachment> = emptyList()) {
         if (!settings.enabled || !hasSmsPermission()) return
+        require(kind == MessageKind.SMS || kind == MessageKind.MMS) { "不支持的消息类型" }
         val ruleRows = dao.rulesWithContacts().map {
             val type = runCatching { RuleType.valueOf(it.rule.type) }.getOrDefault(RuleType.CUSTOM)
             val expression = RulePresets.expression(type, it.rule.expression.takeIf { type == RuleType.CUSTOM })
@@ -110,18 +114,31 @@ class Repository(private val context: Context, private val db: MailDatabase, val
             Rule(it.rule.id, it.rule.name, expression, recipients, it.rule.enabled)
         }
         val defaults = dao.defaultContacts().map { it.email }.ifEmpty { runCatching { Addresses.parse(settings.defaults) }.getOrDefault(emptyList()) }
-        val route = Router.route(body, ruleRows, defaults)
+        val matchText = if (kind == MessageKind.MMS) listOf(subject, body).filter { it.isNotBlank() }.joinToString("\n") else body
+        val route = Router.route(matchText, ruleRows, defaults)
         val eventId = UUID.randomUUID().toString()
         val rows = route.recipients.map { DeliveryRow(UUID.randomUUID().toString(), eventId, it) }
+        val attachmentRows = attachments.map { AttachmentRow(UUID.randomUUID().toString(), eventId, crypto.encrypt(it.fileName), it.contentType, crypto.encrypt(it.bytes)) }
+        val fingerprintBody = if (kind == MessageKind.MMS) {
+            val binaryHashes = attachments.joinToString("") { attachment ->
+                val digest = java.security.MessageDigest.getInstance("SHA-256").digest(attachment.bytes).joinToString("") { "%02x".format(it) }
+                "${attachment.fileName.length}:${attachment.fileName}${attachment.contentType.length}:${attachment.contentType}${digest.length}:$digest"
+            }
+            "MMS${subject.length}:$subject${body.length}:$body$binaryHashes"
+        } else body
         val inserted = db.withTransaction {
-            val result = dao.insertEvent(EventRow(eventId, crypto.fingerprint(Fingerprints.sms(source, smsAt, sim, body)), crypto.encrypt(source), crypto.encrypt(body),
-                System.currentTimeMillis(), smsAt, sim, route.ruleNames.joinToString("、").ifBlank { "默认收件人" }))
-            if (result != -1L) dao.insertDeliveries(rows)
+            val result = dao.insertEvent(EventRow(eventId, crypto.fingerprint(Fingerprints.sms(source, smsAt, sim, fingerprintBody)), crypto.encrypt(source), crypto.encrypt(body),
+                System.currentTimeMillis(), smsAt, sim, route.ruleNames.joinToString("、").ifBlank { "默认收件人" }, kind,
+                subject.takeIf { it.isNotBlank() }?.let(crypto::encrypt).orEmpty(), attachmentRows.size))
+            if (result != -1L) {
+                dao.insertDeliveries(rows)
+                if (attachmentRows.isNotEmpty()) dao.insertAttachments(attachmentRows)
+            }
             result != -1L
         }
         if (inserted) rows.forEach { schedule(it.id) }
         settings.lastError = if (inserted && rows.isEmpty()) {
-            "短信已收到，但没有可用收件人；请设置默认联系人或为命中规则选择联系人"
+            "${if (kind == MessageKind.MMS) "彩信" else "短信"}已收到，但没有可用收件人；请设置默认联系人或为命中规则选择联系人"
         } else ""
     }
     fun decrypt(cipher: String): String = crypto.decrypt(cipher)
@@ -147,8 +164,15 @@ class Repository(private val context: Context, private val db: MailDatabase, val
         val event = dao.event(current.eventId) ?: return false
         val result = try {
             val source = crypto.decrypt(event.source)
-            gateway.send(config, current.recipient, "短信转发 | $source | ${formatTime(event.receivedAt)}",
-                "来源号码：$source\n接收时间：${formatTime(event.receivedAt)}\n短信时间：${formatTime(event.smsAt)}\nSIM 信息：${event.sim}\n匹配规则：${event.matchedRules}\n\n${crypto.decrypt(event.body)}")
+            val isMms = event.kind == MessageKind.MMS
+            val body = buildString {
+                append("来源号码：$source\n接收时间：${formatTime(event.receivedAt)}\n消息时间：${formatTime(event.smsAt)}\nSIM 信息：${event.sim}\n匹配规则：${event.matchedRules}")
+                if (isMms && event.subject.isNotEmpty()) append("\n彩信主题：${crypto.decrypt(event.subject)}")
+                append("\n\n${crypto.decrypt(event.body)}")
+                if (event.attachmentCount > 0) append("\n\n彩信附件：${event.attachmentCount} 个（随邮件附上）")
+            }
+            val attachments = if (isMms) dao.attachments(event.id).map { row -> MailAttachment(crypto.decrypt(row.fileName), row.contentType, crypto.decrypt(row.content)) } else emptyList()
+            gateway.send(config, current.recipient, "${if (isMms) "彩信" else "短信"}转发 | $source | ${formatTime(event.receivedAt)}", body, attachments)
         } catch (_: Exception) { MailResult(FailureKind.PERMANENT, "无法读取加密短信，请检查本机数据") }
         val state = result.kind?.let { DeliveryPolicy.afterFailure(it, current.attempts) } ?: DeliveryState.SENT
         dao.finish(id, state.name, result.detail, System.currentTimeMillis())

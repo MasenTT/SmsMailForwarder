@@ -118,6 +118,8 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
         appendLine("安全补丁：${Build.VERSION.SECURITY_PATCH}")
         appendLine("应用目标 API：${context.applicationInfo.targetSdkVersion}")
         appendLine("短信权限实际状态：${if (permission) "已授予" else "未授予"}")
+        appendLine("彩信通知权限：${if (repo.hasReceiveMmsPermission()) "已授予" else "未授予"}")
+        appendLine("短信库读取权限：${if (repo.hasReadSmsPermission()) "已授予" else "未授予（系统可能限制）"}")
         appendLine("短信 AppOps：${smsAppOpsStatus(context)}")
         appendLine("系统敏感短信能力：${sensitiveSmsPermissionStatus(context)}")
         appendLine("转发开关：${if (repo.settings.enabled) "开启" else "关闭"}")
@@ -132,6 +134,14 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
             appendLine("短信片段：${diagnostic.partCount}")
             appendLine("正文长度：${diagnostic.bodyLength}")
             appendLine("状态：${diagnostic.status}")
+        }
+        val mms = repo.settings.mmsDiagnostic()
+        if (mms.receivedAt == 0L) {
+            appendLine("最近彩信通知：无记录")
+        } else {
+            appendLine("最近彩信通知：${formatTime(mms.receivedAt)}")
+            appendLine("彩信正文片段：${mms.textPartCount} · 附件：${mms.attachmentCount}")
+            appendLine("彩信状态：${mms.status}")
         }
         appendLine("说明：此报告不包含短信正文、来源号码、邮箱地址或授权码。")
     }
@@ -164,15 +174,20 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
     var failure by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var permission by remember { mutableStateOf(repo.hasSmsPermission()) }
+    var mmsPermissions by remember { mutableStateOf(repo.hasMmsPermissions()) }
     val owner = LocalLifecycleOwner.current
     DisposableEffect(owner) {
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) { permission = repo.hasSmsPermission(); repo.settings.changed() } }
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) { permission = repo.hasSmsPermission(); mmsPermissions = repo.hasMmsPermissions(); repo.settings.changed() } }
         owner.lifecycle.addObserver(observer)
         onDispose { owner.lifecycle.removeObserver(observer) }
     }
     val requestPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         permission = it
         notice = if (it) "短信权限已开启" else "未获得短信权限。可在系统应用设置中检查权限。"
+    }
+    val requestMmsPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        mmsPermissions = repo.hasMmsPermissions()
+        notice = if (mmsPermissions) "彩信权限已开启" else "彩信权限未完整开启。小米系统可能会限制未知来源应用的敏感权限，请查看系统应用设置。"
     }
     val action: (suspend () -> Unit) -> Unit = { block ->
         if (!busy) scope.launch {
@@ -191,11 +206,12 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
     val defaultSummary = defaultContacts.joinToString("、") { "${it.name}（${it.email}）" }
     val lastError = remember(revision) { repo.settings.lastError }
     val smsDiagnostic = remember(revision) { repo.settings.smsDiagnostic() }
+    val mmsDiagnostic = remember(revision) { repo.settings.mmsDiagnostic() }
     val active = enabled && permission
     val titles = listOf("首页", "规则", "记录", "设置")
     val icons = listOf(Icons.Outlined.Home, Icons.Outlined.AccountTree, Icons.Outlined.History, Icons.Outlined.Settings)
     Scaffold(
-        topBar = { TopAppBar(title = { Column { Text("短信转邮件", fontWeight = FontWeight.Bold); Text("让重要消息，及时抵达", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }) },
+        topBar = { TopAppBar(title = { Column { Text("短信 / 彩信转邮件", fontWeight = FontWeight.Bold); Text("让重要消息，及时抵达", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }) },
         bottomBar = { NavigationBar { titles.forEachIndexed { index, title -> NavigationBarItem(selected = tab == index, onClick = { tab = index }, icon = { Icon(icons[index], null) }, label = { Text(title) }) } } },
         floatingActionButton = { if (tab == 1) FloatingActionButton(onClick = { editing = null; editingRuleWithContacts = null; pendingPickerSelection = emptySet(); ruleDraftName = ""; ruleDraftType = RuleType.CUSTOM; ruleDraftExpression = ""; ruleDraftSample = ""; dialog = "rule" }) { Icon(Icons.Outlined.Add, "新增规则") } }
     ) { padding ->
@@ -210,8 +226,8 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(Icons.Outlined.Shield, null, modifier = Modifier.size(32.dp))
                                     Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                                        Text(if (active) "短信转发已开启" else if (enabled) "短信权限待恢复" else "短信转发已暂停", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                                        Text(if (active) "新短信将按规则发送" else "完成设置后，开启自动转发", style = MaterialTheme.typography.bodyMedium)
+                                Text(if (active) "消息转发已开启" else if (enabled) "短信权限待恢复" else "消息转发已暂停", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                                        Text(if (active && mmsPermissions) "新短信和彩信将按规则发送" else if (active) "短信转发中；彩信权限待开启" else "完成设置后，开启自动转发", style = MaterialTheme.typography.bodyMedium)
                                     }
                                     Switch(checked = enabled, enabled = !busy, onCheckedChange = { value -> action { repo.setEnabled(value) } }, modifier = Modifier.semanticsLabel("短信转发总开关"))
                                 }
@@ -225,11 +241,12 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
                         val pending = events.sumOf { it.deliveries.count { d -> d.state in listOf("PENDING", "SENDING", "CONFIG_ERROR") } }
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { Stat("今日已提交", count.toString(), Modifier.weight(1f)); Stat("待处理投递", pending.toString(), Modifier.weight(1f)) }
                     }
-                    if (!permission || !configured || defaultContacts.isEmpty()) item {
+                    if (!permission || !configured || defaultContacts.isEmpty() || !mmsPermissions) item {
                         Panel {
                             Text("完成转发设置", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                             Text("只需配置一次，即可按规则转发新短信。")
                             TextButton(onClick = { requestPermission.launch(Manifest.permission.RECEIVE_SMS) }, enabled = !permission) { Text(if (permission) "✓ 短信接收权限已开启" else "1. 开启短信接收权限") }
+                            if (!mmsPermissions) TextButton(onClick = { requestMmsPermissions.launch(arrayOf(Manifest.permission.RECEIVE_MMS, Manifest.permission.READ_SMS)) }) { Text("开启彩信转发权限（需系统允许）") }
                             TextButton(onClick = { dialog = "mail" }) { Text(if (configured) "✓ 发件邮箱已配置" else "2. 配置发件邮箱") }
                             TextButton(onClick = { dialog = "defaultPicker" }) { Text(if (defaultContacts.isNotEmpty()) "✓ 默认收件人已配置" else "3. 设置默认收件人") }
                         }
@@ -263,7 +280,20 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
                 3 -> {
                     item { Text("设置", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold) }
                     item { Panel { Text("邮件与收件人", fontWeight = FontWeight.Bold); SettingButton("发件邮箱", if (configured) "已配置 · 查看或修改" else "QQ / 163 / 自定义 SMTP") { dialog = "mail" }; SettingButton("默认收件人", defaultSummary.ifBlank { "未设置" }) { dialog = "defaultPicker" }; SettingButton("联系人管理", if (contacts.isEmpty()) "新增姓名、邮箱和备注" else "已维护 ${contacts.size} 个联系人") { dialog = "contacts" }; SettingButton("发送测试邮件", "保存发件配置后，验证邮箱连接") { dialog = "test" } } }
-                    item { Panel { Text("运行权限", fontWeight = FontWeight.Bold); Text(if (permission) "短信权限：已开启" else "短信权限：未开启"); OutlinedButton(onClick = { requestPermission.launch(Manifest.permission.RECEIVE_SMS) }) { Text("申请短信权限") }; OutlinedButton(onClick = { context.startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))) }) { Text("打开系统应用设置") }; Text("在系统设置中允许后台运行与自启动。强行停止期间无法保证接收短信；重新打开后恢复未完成任务。", style = MaterialTheme.typography.bodySmall) } }
+                    item {
+                        Panel {
+                            Text("运行权限", fontWeight = FontWeight.Bold)
+                            Text(if (permission) "短信权限：已开启" else "短信权限：未开启")
+                            OutlinedButton(onClick = { requestPermission.launch(Manifest.permission.RECEIVE_SMS) }) { Text("申请短信权限") }
+                            HorizontalDivider()
+                            Text("彩信通知权限：${if (repo.hasReceiveMmsPermission()) "已开启" else "未开启"}")
+                            Text("短信库读取权限：${if (repo.hasReadSmsPermission()) "已开启" else "未开启"}")
+                            OutlinedButton(onClick = { requestMmsPermissions.launch(arrayOf(Manifest.permission.RECEIVE_MMS, Manifest.permission.READ_SMS)) }) { Text(if (mmsPermissions) "重新检查彩信权限" else "申请彩信转发权限") }
+                            Text("完整彩信由当前默认短信应用下载后读取。此应用不会更改默认短信应用；若系统因安装来源限制敏感权限，请按小米系统的提示解除限制。", style = MaterialTheme.typography.bodySmall)
+                            OutlinedButton(onClick = { context.startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))) }) { Text("打开系统应用设置") }
+                            Text("允许后台运行与自启动。强行停止期间无法保证接收消息；重新打开后恢复未完成任务。", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                     item {
                         Panel {
                             Text("短信接收诊断", fontWeight = FontWeight.Bold)
@@ -274,6 +304,15 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
                                 Text("短信片段：${smsDiagnostic.partCount} · 正文长度：${smsDiagnostic.bodyLength}")
                                 Text("状态：${smsDiagnostic.status}", style = MaterialTheme.typography.bodySmall)
                             }
+                            HorizontalDivider()
+                            Text("彩信读取", fontWeight = FontWeight.Bold)
+                            if (mmsDiagnostic.receivedAt == 0L) {
+                                Text("还没有记录到系统彩信通知", style = MaterialTheme.typography.bodySmall)
+                            } else {
+                                Text("最近通知：${formatTime(mmsDiagnostic.receivedAt)}")
+                                Text("正文片段：${mmsDiagnostic.textPartCount} · 附件：${mmsDiagnostic.attachmentCount}")
+                                Text("状态：${mmsDiagnostic.status}", style = MaterialTheme.typography.bodySmall)
+                            }
                             Text("这里只记录时间、片段数和长度，不保存诊断用的短信正文。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             OutlinedButton(onClick = {
                                 val report = buildSmsDiagnosticReport(context, repo, permission, smsDiagnostic)
@@ -283,7 +322,7 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
                             }) { Text("复制诊断信息") }
                         }
                     }
-                    item { Panel { Text("数据与隐私", fontWeight = FontWeight.Bold); Text("短信正文、来源号码和 SMTP 授权码在本机加密保存；联系人邮箱和规则名称作为本地配置保存。邮件直接发送至你配置的邮箱，不经过其他服务器。卸载将删除本机记录和配置。", style = MaterialTheme.typography.bodyMedium); TextButton(onClick = { dialog = "clear" }) { Text("清空已完成记录", color = MaterialTheme.colorScheme.error) }; Text("版本 0.2.1 · 联系人、快捷规则和短信诊断", style = MaterialTheme.typography.labelSmall) } }
+                    item { Panel { Text("数据与隐私", fontWeight = FontWeight.Bold); Text("短信和彩信正文、来源号码、彩信主题与媒体附件、SMTP 授权码在本机加密保存；联系人邮箱和规则名称作为本地配置保存。邮件直接发送至你配置的邮箱，不经过其他服务器。卸载将删除本机记录和配置。", style = MaterialTheme.typography.bodyMedium); TextButton(onClick = { dialog = "clear" }) { Text("清空已完成记录", color = MaterialTheme.colorScheme.error) }; Text("版本 0.2.2 · 彩信附件转发", style = MaterialTheme.typography.labelSmall) } }
                 }
             }
         }
@@ -302,12 +341,23 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
         "clear" -> Confirm("清空已完成记录？", "将删除已提交和明确失败的记录；等待发送、配置异常和结果不确定的任务继续保留。", { dialog = null }) { action { repo.dao.clearCompleted(Long.MAX_VALUE); withContext(Dispatchers.Main) { dialog = null } } }
     }
     val selected = events.find { it.event.id == selectedId }
-    if (selected != null) SheetDialog("短信详情", { selectedId = null }) {
+    if (selected != null) SheetDialog(if (selected.event.kind == MessageKind.MMS) "彩信详情" else "短信详情", { selectedId = null }) {
         Text("来源：${runCatching { repo.decrypt(selected.event.source) }.getOrDefault("无法解密")}")
-        Text("接收：${formatTime(selected.event.receivedAt)}\n${selected.event.sim}\n规则：${selected.event.matchedRules}")
+        Text("类型：${if (selected.event.kind == MessageKind.MMS) "彩信" else "短信"}\n接收：${formatTime(selected.event.receivedAt)}\n${selected.event.sim}\n规则：${selected.event.matchedRules}")
+        if (selected.event.kind == MessageKind.MMS && selected.event.subject.isNotEmpty()) Text("主题：${runCatching { repo.decrypt(selected.event.subject) }.getOrDefault("无法解密主题")}")
         var expanded by remember(selected.event.id) { mutableStateOf(false) }
-        TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "收起短信正文" else "查看短信正文") }
+        val bodyLabel = if (selected.event.kind == MessageKind.MMS) "彩信正文" else "短信正文"
+        TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "收起$bodyLabel" else "查看$bodyLabel") }
         if (expanded) Text(runCatching { repo.decrypt(selected.event.body) }.getOrDefault("无法解密本机记录"))
+        if (selected.event.kind == MessageKind.MMS) {
+            var attachments by remember(selected.event.id) { mutableStateOf(emptyList<AttachmentRow>()) }
+            LaunchedEffect(selected.event.id) { attachments = withContext(Dispatchers.IO) { repo.dao.attachments(selected.event.id) } }
+            Text("彩信附件：${selected.event.attachmentCount} 个")
+            attachments.forEach { attachment ->
+                Text(runCatching { repo.decrypt(attachment.fileName) }.getOrDefault("无法解密附件名称") + " · " + attachment.contentType,
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        }
         selected.deliveries.forEach { delivery ->
             HorizontalDivider()
             Text(delivery.recipient, fontWeight = FontWeight.Bold)
@@ -337,6 +387,7 @@ fun stateLabel(state: String) = when (state) { "PENDING" -> "等待发送"; "SEN
     Card(onClick = click, modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(runCatching { repo.decrypt(row.event.source) }.getOrDefault("无法解密来源"), fontWeight = FontWeight.Bold)
+            if (row.event.kind == MessageKind.MMS) Text("彩信 · ${row.event.attachmentCount} 个附件", color = MaterialTheme.colorScheme.primary)
             Text("${formatTime(row.event.receivedAt)} · ${row.event.matchedRules}", style = MaterialTheme.typography.bodySmall)
             Text(row.deliveries.groupingBy { stateLabel(it.state) }.eachCount().entries.joinToString(" · ") { "${it.key} ${it.value}" }, color = deliveryColor(row.deliveries))
         }

@@ -98,6 +98,14 @@ class UiSmokeTest {
         compose.onNode(hasScrollAction()).performScrollToNode(hasText("打开系统应用设置"))
         compose.onNodeWithText("打开系统应用设置").performClick()
     }
+    @Test fun mmsPermissionsAndSystemDownloadDependencyAreExplained() {
+        compose.onNodeWithText("设置", useUnmergedTree = true).performClick()
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText("彩信通知权限：", substring = true))
+        compose.onNode(hasText("彩信通知权限：", substring = true)).assertExists()
+        compose.onNode(hasText("短信库读取权限：", substring = true)).assertExists()
+        compose.onNode(hasText("完整彩信由当前默认短信应用下载后读取。", substring = true)).assertExists()
+        compose.onNode(hasText("此应用不会更改默认短信应用", substring = true)).assertExists()
+    }
     @Test fun manageContactsAndQuickRulePresets() {
         compose.onNodeWithText("设置", useUnmergedTree = true).performClick()
         compose.onNodeWithText("联系人管理").performClick()

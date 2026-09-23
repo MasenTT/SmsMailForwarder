@@ -1,23 +1,23 @@
-# 0.2.1 调试验证报告
+# 0.2.2 彩信功能验证报告
 
-更新日期：2026-09-22。版本 0.2.1，包名 `cn.smsmail.forwarder`，数据库版本 3，编译 API 37、目标 API 36。
+更新日期：2026-09-23。版本 0.2.2，包名 `cn.smsmail.forwarder`，数据库版本 4，编译 API 37、目标 API 36。
 
 ## 交付状态
 
-联系人管理、联系人选择器、规则快速配置、短信广播诊断和数据库迁移已实现并通过下列自动化验证。尚未完成真实 QQ／163 收件、实体手机兼容性和 TalkBack 验收，因此不宣称全部计划已验收完成或具备商店发布资格。
+短信／彩信规则转发、联系人管理、短信广播诊断和数据库迁移已实现并通过下列自动化验证。彩信邮件附件、主题规则路由、加密附件存储及旧库升级已有自动化证据；Android 15 模拟器没有运营商彩信网络，未验证真实 WAP Push 到系统短信库的完整收件链路。尚未完成小米 14 彩信权限／自动下载验收、真实 QQ／163 收件和 TalkBack 验收，因此不宣称全部计划已验收完成或具备商店发布资格。
 
 ## 自动化结果
 
 | 验证层 | 结果 | 覆盖内容 | 证据 |
 | --- | --- | --- | --- |
 | 核心 JVM | 14 / 14 通过 | 全规则命中、去重、默认回退、禁用规则、中文多行、正则错误、地址与配置校验、重试上限、指纹、配置脱敏、所有／验证码／金额预设、联系人校验 | `core/build/reports/tests/test/index.html`、`verification.log` |
-| 本机 SMTP | 8 / 8 通过 | SSL/TLS、STARTTLS 成功；禁止明文降级；认证错误；收件人拒绝；DATA 后中断；不受信证书；缺少授权码 | `app/build/reports/tests/testDebugUnitTest/index.html`、`smtp-tests-final.log` |
-| Android 集成 | 12 / 12 通过 | Room 与 Keystore、随机 IV、重复广播、规则快照、部分成功、暂停、五次上限、手动重试、配置恢复、中断不确定、七天保留边界、v1→v2→v3 无损升级、联系人路由快照、编辑邮箱影响范围、引用删除保护、本机 HMAC 密钥不可导出、短信广播诊断元数据 | `app/build/reports/androidTests/connected/debug/index.html` |
-| Compose UI | 5 / 5 通过 | 四页导航；规则新增／编辑／测试／启停／删除；联系人新增与搜索入口；验证码预设；联系人选择；SMTP 模板和协议切换；默认收件人；测试邮件连接错误；记录清理确认；正文展开；仅重试失败收件人；不完整配置禁止开启、系统设置跳转、权限申请入口 | `app/build/outputs/androidTest-results/connected/debug/`、同上仪器测试报告 |
-| 构建与静态检查 | 通过 | 0.2.1 APK 与测试 APK 编译；Lint 0 错误（保留依赖更新／KTX 风格建议） | `final-build-0.2.1.log`、`final-validation-0.2.1.log` |
-| APK 签名／安装 | 通过 | v2 签名验证、Android 15 安装冷启动；最低 API 26、目标 API 36；包内未发现 JaCoCo、测试证书或测试 schema 标记 | `apk-signature-0.2.1.txt`、`screenshots/17-sms-diagnostic-0.2.1.png` |
+| 本机 SMTP | 10 / 10 通过 | 原有 SSL/TLS、STARTTLS 和错误处理；彩信 multipart 邮件、中文正文、MIME 附件名／类型／二进制内容及附件名注入防护 | `app/build/reports/tests/testDebugUnitTest/index.html` |
+| Android 集成 | 15 / 15 通过 | 原有 Room／Keystore、队列和联系人测试；短信 v1→v4、彩信 v3→v4 无损升级；彩信主题路由、默认回退、重复去重和加密附件投递 | `app/build/reports/androidTests/connected/debug/index.html` |
+| Compose UI | 6 / 6 通过 | 原有五个 UI 流程；彩信权限状态及默认短信应用下载依赖说明；正文／详情兼容 | `app/build/outputs/androidTest-results/connected/debug/`、同上仪器测试报告 |
+| 构建与静态检查 | 通过 | 0.2.2 APK 与测试 APK 编译；Lint 0 错误、21 项建议／警告（目标 API 36、依赖更新和既有 KTX 风格建议） | 本轮 Android 构建及 `app/build/reports/lint-results-debug.html` |
+| APK 签名／安装 | 通过 | 0.2.2 versionCode 5；APK Signature Scheme v2 校验通过；Android 15 模拟器覆盖安装及强制结束后的冷启动成功；包内确认 `RECEIVE_MMS`、`READ_SMS` | `docs/DELIVERY.json`、Downloads 下签名报告及最终验证记录 |
 
-共 39 项自动化测试（14 项核心 JVM、8 项 SMTP 单元、12 项 Android 集成、5 项 Compose UI），0 失败、0 跳过。当前普通构建已完成 Android 15 专用模拟器 17 / 17 设备测试，其中 5 项 Compose UI 流程已开启自动无障碍检查，运行时未报告阻断错误。自动检查不等同于 TalkBack 人工读屏验收。
+共 45 项自动化测试（14 项核心 JVM、10 项 SMTP 单元、15 项 Android 集成、6 项 Compose UI），0 失败、0 跳过。Android 15 专用模拟器 21 / 21 设备测试通过，其中 6 项 Compose UI 流程已开启自动无障碍检查，运行时未报告阻断错误。自动检查不等同于 TalkBack 人工读屏验收。
 
 下列 JaCoCo 数字是上一轮 0.1.1 代码的基线报告；本轮 0.2.1 以联系人／预设／短信诊断的定向测试和完整设备测试作为交付证据，未宣称以下数字代表当前源码覆盖率：
 
@@ -68,6 +68,15 @@ Lint 保留依赖更新建议和 KTX 风格建议，不隐藏错误或关闭规�
 5. 具体国内商店的权限政策、隐私政策发布、备案及正式签名与上架。
 
 当前 APK 使用 Android Debug 测试签名。请先用于自有设备验收；正式发布需要独立发布签名及渠道审核。授权码应在应用中输入，不写入聊天、源码或报告。
+
+0.2.2 APK 为普通 debug 构建，不含 JaCoCo 插桩或测试证书；签名和大小／哈希详见 `docs/DELIVERY.json`。Android 15 模拟器已安装并冷启动，但未模拟真实运营商 MMS 网络。
+
+## 0.2.2 彩信实现边界
+
+- 应用监听系统 `WAP_PUSH_RECEIVED` 通知，再等待系统默认短信应用把彩信下载到 Telephony Provider；彩信正文、主题和附件的路由／邮件处理有自动化验证，但没有模拟运营商 MMSC 或真实 SIM 彩信下载。
+- 彩信要求系统授予 `RECEIVE_MMS` 与硬限制的 `READ_SMS`。侧载安装来源或小米系统可能拒绝授予；本应用不切换默认短信角色，也不能仅凭 WAP Push 通知重建尚未下载的原始附件。
+- Android 15 模拟器确认页面权限说明、Room 迁移、彩信主题规则、默认回退、附件加密及 multipart 邮件格式。Provider 查询字段和小米 14 的实际广播／Provider 行为仍须真机验收。
+- 单封媒体附件合计上限 15 MiB；超限会记录读取失败，不创建已投递事件。短信规则不命中彩信文本时沿用默认联系人；规则匹配文本由彩信主题与文本片段组成。
 
 ## 0.2.1 调试交付核验
 

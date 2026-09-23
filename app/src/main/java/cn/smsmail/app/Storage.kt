@@ -60,9 +60,21 @@ class Crypto {
             String(doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
         }
     }
+    fun encrypt(bytes: ByteArray): ByteArray {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
+        return cipher.iv + cipher.doFinal(bytes)
+    }
+    fun decrypt(bytes: ByteArray): ByteArray {
+        require(bytes.size >= 28) { "加密附件损坏" }
+        return Cipher.getInstance("AES/GCM/NoPadding").run {
+            init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
+            doFinal(bytes.copyOfRange(12, bytes.size))
+        }
+    }
 }
 
 data class SmsDiagnostic(val receivedAt: Long, val partCount: Int, val bodyLength: Int, val status: String)
+data class MmsDiagnostic(val receivedAt: Long, val textPartCount: Int, val attachmentCount: Int, val status: String)
 
 class Settings(context: Context, private val crypto: Crypto) {
     private val prefs = context.getSharedPreferences("private_settings", Context.MODE_PRIVATE)
@@ -89,6 +101,15 @@ class Settings(context: Context, private val crypto: Crypto) {
             .putInt("sms_diag_length", bodyLength)
             .putString("sms_diag_status", status)
             .commit())
+        changed()
+    }
+    fun mmsDiagnostic(): MmsDiagnostic = MmsDiagnostic(
+        prefs.getLong("mms_diag_at", 0L), prefs.getInt("mms_diag_text", 0),
+        prefs.getInt("mms_diag_attachments", 0), prefs.getString("mms_diag_status", "")!!
+    )
+    fun recordMmsBroadcast(textParts: Int, attachments: Int, status: String, receivedAt: Long = System.currentTimeMillis()) {
+        check(prefs.edit().putLong("mms_diag_at", receivedAt).putInt("mms_diag_text", textParts)
+            .putInt("mms_diag_attachments", attachments).putString("mms_diag_status", status).commit())
         changed()
     }
     fun changed() { changes.update { it + 1 } }
@@ -156,9 +177,14 @@ data class RuleWithContacts(
     ) val contacts: List<ContactRow>
 )
 @Entity(tableName = "events", indices = [Index(value = ["fingerprint"], unique = true)])
-data class EventRow(@PrimaryKey val id: String, val fingerprint: String, val source: String, val body: String, val receivedAt: Long, val smsAt: Long, val sim: String, val matchedRules: String)
+data class EventRow(@PrimaryKey val id: String, val fingerprint: String, val source: String, val body: String, val receivedAt: Long, val smsAt: Long, val sim: String, val matchedRules: String,
+                    @ColumnInfo(defaultValue = "'SMS'") val kind: String = MessageKind.SMS,
+                    @ColumnInfo(defaultValue = "''") val subject: String = "",
+                    @ColumnInfo(defaultValue = "0") val attachmentCount: Int = 0)
 @Entity(tableName = "deliveries", foreignKeys = [ForeignKey(entity = EventRow::class, parentColumns = ["id"], childColumns = ["eventId"], onDelete = ForeignKey.CASCADE)], indices = [Index("eventId")])
 data class DeliveryRow(@PrimaryKey val id: String, val eventId: String, val recipient: String, val state: String = "PENDING", val attempts: Int = 0, val detail: String = "等待发送", val updatedAt: Long = System.currentTimeMillis())
+@Entity(tableName = "event_attachments", foreignKeys = [ForeignKey(entity = EventRow::class, parentColumns = ["id"], childColumns = ["eventId"], onDelete = ForeignKey.CASCADE)], indices = [Index("eventId")])
+data class AttachmentRow(@PrimaryKey val id: String, val eventId: String, val fileName: String, val contentType: String, val content: ByteArray)
 
 data class EventWithDeliveries(@Embedded val event: EventRow, @Relation(parentColumn = "id", entityColumn = "eventId") val deliveries: List<DeliveryRow>)
 
@@ -187,6 +213,8 @@ data class EventWithDeliveries(@Embedded val event: EventRow, @Relation(parentCo
     @Transaction @Query("SELECT * FROM events ORDER BY receivedAt DESC") fun observeEvents(): Flow<List<EventWithDeliveries>>
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertEvent(event: EventRow): Long
     @Insert suspend fun insertDeliveries(deliveries: List<DeliveryRow>)
+    @Insert suspend fun insertAttachments(attachments: List<AttachmentRow>)
+    @Query("SELECT * FROM event_attachments WHERE eventId=:eventId ORDER BY id") suspend fun attachments(eventId: String): List<AttachmentRow>
     @Query("SELECT * FROM events WHERE id=:id") suspend fun event(id: String): EventRow?
     @Query("SELECT * FROM deliveries WHERE id=:id") suspend fun delivery(id: String): DeliveryRow?
     @Query("SELECT * FROM deliveries WHERE state='PENDING'") suspend fun pending(): List<DeliveryRow>
@@ -246,5 +274,15 @@ fun contactMigration(legacyDefaults: String): Migration = object : Migration(2, 
     }
 }
 
-@Database(entities = [ContactRow::class, RuleRow::class, RuleContactCrossRef::class, DefaultContactCrossRef::class, EventRow::class, DeliveryRow::class], version = 3, exportSchema = true)
+fun mmsMigration(): Migration = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE events ADD COLUMN kind TEXT NOT NULL DEFAULT 'SMS'")
+        db.execSQL("ALTER TABLE events ADD COLUMN subject TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE events ADD COLUMN attachmentCount INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("CREATE TABLE IF NOT EXISTS event_attachments (id TEXT NOT NULL, eventId TEXT NOT NULL, fileName TEXT NOT NULL, contentType TEXT NOT NULL, content BLOB NOT NULL, PRIMARY KEY(id), FOREIGN KEY(eventId) REFERENCES events(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_event_attachments_eventId ON event_attachments (eventId)")
+    }
+}
+
+@Database(entities = [ContactRow::class, RuleRow::class, RuleContactCrossRef::class, DefaultContactCrossRef::class, EventRow::class, DeliveryRow::class, AttachmentRow::class], version = 4, exportSchema = true)
 abstract class MailDatabase : RoomDatabase() { abstract fun dao(): MailDao }
