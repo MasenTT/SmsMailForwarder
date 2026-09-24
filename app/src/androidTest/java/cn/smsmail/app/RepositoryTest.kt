@@ -24,15 +24,20 @@ class RepositoryTest {
     private var result = MailResult(detail = "test accepted")
     private var calls = 0
     private var sentAttachments = emptyList<MailAttachment>()
+    private var sentSubject = ""
+    private var sentBody = ""
+    private val sentRecipients = mutableListOf<String>()
     @Before fun setup() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<MailApp>()
         context.getSharedPreferences("private_settings", 0).edit().clear().commit()
         db = Room.inMemoryDatabaseBuilder(context, MailDatabase::class.java).build()
         crypto = Crypto(); settings = Settings(context, crypto)
         repo = Repository(context, db, settings, crypto, object : MailGateway {
-            override fun send(config: MailConfig, recipient: String, subject: String, body: String): MailResult { calls++; return result }
+            override fun send(config: MailConfig, recipient: String, subject: String, body: String): MailResult {
+                calls++; sentSubject = subject; sentBody = body; sentRecipients.add(recipient); return result
+            }
             override fun send(config: MailConfig, recipient: String, subject: String, body: String, attachments: List<MailAttachment>): MailResult {
-                calls++; sentAttachments = attachments; return result
+                calls++; sentSubject = subject; sentBody = body; sentRecipients.add(recipient); sentAttachments = attachments; return result
             }
         }, { scheduled.add(it) })
         settings.saveMail(MailConfig("smtp.example.com", 465, "SSL", "test@example.com", "fake-test-credential"))
@@ -67,13 +72,15 @@ class RepositoryTest {
         assertEquals("测试短信", repo.decrypt(rows.single().event.body))
         assertEquals(1, scheduled.size)
     }
-    @Test fun multipleRulesSnapshotAndPartialSuccess() = runBlocking {
-        db.dao().saveRule(RuleRow("1", "通知", "通知", "a@example.com\nb@example.com"))
-        db.dao().saveRule(RuleRow("2", "业务", "业务", "A@example.com"))
+    @Test fun firstMatchingRuleRoutesOnlyItsDeduplicatedRecipients() = runBlocking {
+        db.dao().saveRule(RuleRow("1", "通知", "通知", "a@example.com\nb@example.com", sortOrder = 0))
+        db.dao().saveRule(RuleRow("2", "业务", "业务", "A@example.com", sortOrder = 1))
         repo.accept("10086", 2L, "SIM1", "业务通知")
         db.dao().deleteRule("1"); db.dao().deleteRule("2")
         val jobs = db.dao().pending()
         assertEquals(2, jobs.size)
+        assertEquals(listOf("a@example.com", "b@example.com"), jobs.map { it.recipient }.sorted())
+        assertEquals("通知", db.dao().event(jobs.first().eventId)!!.matchedRules)
         assertFalse(repo.deliver(jobs[0].id))
         result = MailResult(FailureKind.TRANSIENT, "offline")
         assertTrue(repo.deliver(jobs[1].id))
@@ -81,6 +88,53 @@ class RepositoryTest {
         assertEquals("PENDING", db.dao().delivery(jobs[1].id)!!.state)
         assertFalse(repo.deliver(jobs[0].id))
         assertEquals(2, calls)
+    }
+
+    @Test fun ruleTitleAndBodyOptionsAreSnapshottedWhenMessageIsAccepted() = runBlocking {
+        val contact = repo.saveContact(null, "验证码收件人", "otp@example.com", "")
+        val rule = RuleRow("otp", "验证码", "验证码", "", subjectTemplate = "{消息类型}：{来源号码}：{匹配规则}：{消息内容}")
+        repo.saveRuleWithContacts(rule, listOf(contact.id))
+        settings.emailMetadataMask = EmailMetadata.SOURCE_NUMBER.bit or EmailMetadata.MESSAGE_TIME.bit or EmailMetadata.MATCHED_RULE.bit
+
+        repo.accept("10690000", 1000L, "订阅 2", "验证码 123456")
+        val event = db.dao().observeEvents().first().single().event
+        val pending = db.dao().pending().single()
+        assertEquals(EmailMetadata.SOURCE_NUMBER.bit or EmailMetadata.MESSAGE_TIME.bit or EmailMetadata.MATCHED_RULE.bit, event.emailMetadataMask)
+        assertEquals("短信：10690000：验证码：验证码 123456", crypto.decrypt(pending.emailSubjectSnapshot))
+        assertFalse(pending.emailSubjectSnapshot.contains("10690000"))
+
+        settings.emailMetadataMask = 0
+        db.dao().saveRule(rule.copy(subjectTemplate = "编辑后的标题"))
+        assertFalse(repo.deliver(pending.id))
+
+        assertEquals("短信：10690000：验证码：验证码 123456", sentSubject)
+        assertEquals(
+            "来源号码：10690000\n短信时间：${formatTime(1000L)}\n匹配规则：验证码\n\n验证码 123456",
+            sentBody
+        )
+    }
+
+    @Test fun ruleOrderCanBePersistentlyReorderedAndControlsRouting() = runBlocking {
+        val first = repo.saveContact(null, "第一个", "first@example.com", "")
+        val second = repo.saveContact(null, "第二个", "second@example.com", "")
+        repo.saveRuleWithContacts(RuleRow("specific", "验证码", "验证码", ""), listOf(first.id))
+        repo.saveRuleWithContacts(RuleRow("catchall", "所有", ".*", ""), listOf(second.id))
+
+        repo.reorderRules(listOf("catchall", "specific"))
+        assertEquals(listOf("catchall", "specific"), db.dao().rules().map { it.id })
+        repo.accept("10086", 30L, "SIM1", "验证码 123456")
+
+        val job = db.dao().pending().single()
+        assertEquals("second@example.com", job.recipient)
+        assertEquals("所有", db.dao().event(job.eventId)!!.matchedRules)
+    }
+
+    @Test fun metadataDefaultsOffAndCanBeChangedIndependently() = runBlocking {
+        assertEquals(0, settings.emailMetadataMask)
+        settings.setEmailMetadataVisible(EmailMetadata.SOURCE_NUMBER, true)
+        settings.setEmailMetadataVisible(EmailMetadata.SIM_INFO, true)
+        assertEquals(EmailMetadata.SOURCE_NUMBER.bit or EmailMetadata.SIM_INFO.bit, settings.emailMetadataMask)
+        assertFalse((settings.emailMetadataMask and EmailMetadata.RECEIVED_TIME.bit) != 0)
     }
     @Test fun pauseAndResumeAndFiveAttemptLimit() = runBlocking {
         repo.accept("10086", 3L, "SIM1", "短信")
@@ -151,7 +205,7 @@ class RepositoryTest {
 
     @Test fun mmsSubjectRoutesAndEncryptedAttachmentsSurviveDelivery() = runBlocking {
         val contact = repo.saveContact(null, "账单联系人", "bill@example.com", "")
-        repo.saveRuleWithContacts(RuleRow("mms-subject", "账单彩信", "电子账单", "", true, 1L, RuleType.CUSTOM.name, RulePresets.VERSION), listOf(contact.id))
+        repo.saveRuleWithContacts(RuleRow("mms-subject", "账单彩信", "电子账单", "", true, 1L, RuleType.CUSTOM.name, RulePresets.VERSION, subjectTemplate = "{彩信主题}：{消息内容}"), listOf(contact.id))
         val attachment = MailAttachment("账单图片.png", "image/png", byteArrayOf(1, 2, 3, 4))
         repo.accept("10690000", 1000L, "SIM1", "本月账单请查收", kind = MessageKind.MMS, subject = "电子账单", attachments = listOf(attachment))
 
@@ -160,9 +214,12 @@ class RepositoryTest {
         assertEquals("电子账单", crypto.decrypt(event.subject))
         assertNotEquals("账单图片.png", db.dao().attachments(event.id).single().fileName)
         assertArrayEquals(attachment.bytes, crypto.decrypt(db.dao().attachments(event.id).single().content))
-        assertEquals("bill@example.com", db.dao().pending().single().recipient)
+        val pending = db.dao().pending().single()
+        assertEquals("bill@example.com", pending.recipient)
+        assertEquals("电子账单：本月账单请查收", crypto.decrypt(pending.emailSubjectSnapshot))
 
-        assertFalse(repo.deliver(db.dao().pending().single().id))
+        assertFalse(repo.deliver(pending.id))
+        assertEquals("电子账单：本月账单请查收", sentSubject)
         assertEquals("账单图片.png", sentAttachments.single().fileName)
         assertEquals("image/png", sentAttachments.single().contentType)
         assertArrayEquals(attachment.bytes, sentAttachments.single().bytes)

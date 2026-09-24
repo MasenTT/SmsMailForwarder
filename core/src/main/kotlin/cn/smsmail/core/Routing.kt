@@ -5,8 +5,15 @@ import com.google.re2j.PatternSyntaxException
 import java.security.MessageDigest
 import java.util.Locale
 
-data class Rule(val id: String, val name: String, val expression: String, val recipients: List<String>, val enabled: Boolean = true)
-data class Route(val recipients: List<String>, val ruleNames: List<String>)
+data class Rule(
+    val id: String,
+    val name: String,
+    val expression: String,
+    val recipients: List<String>,
+    val enabled: Boolean = true,
+    val subjectTemplate: String = ""
+)
+data class Route(val recipients: List<String>, val ruleNames: List<String>, val matchedRule: Rule? = null)
 enum class RuleType { ALL, OTP, AMOUNT, CUSTOM }
 object RulePresets {
     const val VERSION = 1
@@ -58,8 +65,31 @@ object Router {
     }
     fun matches(expression: String, body: String): Boolean = Pattern.compile(expression).matcher(body).find()
     fun route(body: String, rules: List<Rule>, defaults: List<String>): Route {
-        val matched = rules.filter { it.enabled && matches(it.expression, body) }
-        return Route(Addresses.distinct(if (matched.isEmpty()) defaults else matched.flatMap { it.recipients }), matched.map { it.name })
+        val matched = rules.firstOrNull { it.enabled && matches(it.expression, body) }
+        return if (matched == null) Route(Addresses.distinct(defaults), emptyList())
+        else Route(Addresses.distinct(matched.recipients), listOf(matched.name), matched)
+    }
+}
+
+object SubjectTemplate {
+    const val MESSAGE_CONTENT_TOKEN = "{消息内容}"
+    const val MESSAGE_CONTENT_PREVIEW_LIMIT = 50
+    private val tokenPattern = Regex("\\{[^{}]+\\}")
+    private val messageContentSeparators = Regex("[\\s\\p{Z}\\p{Cc}]+")
+
+    fun render(template: String, values: Map<String, String>): String =
+        tokenPattern.replace(template) { token ->
+            val value = values[token.value] ?: return@replace token.value
+            if (token.value == MESSAGE_CONTENT_TOKEN) messageContentPreview(value) else value
+        }.trim()
+
+    private fun messageContentPreview(content: String): String {
+        val normalized = content.replace(messageContentSeparators, " ").trim()
+        val codePointCount = normalized.codePointCount(0, normalized.length)
+        if (codePointCount <= MESSAGE_CONTENT_PREVIEW_LIMIT) return normalized
+
+        val previewEnd = normalized.offsetByCodePoints(0, MESSAGE_CONTENT_PREVIEW_LIMIT - 1)
+        return normalized.substring(0, previewEnd) + "…"
     }
 }
 data class MailConfig(val host: String, val port: Int, val security: String, val email: String, val password: String) {

@@ -1,6 +1,7 @@
 package cn.smsmail.app
 
 import androidx.compose.ui.test.*
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.junit4.accessibility.enableAccessibilityChecks
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -25,7 +26,25 @@ class UiSmokeTest {
         app.getSharedPreferences("private_settings", 0).edit().clear().commit()
         app.settings.changed()
         compose.waitForIdle()
+    }
+
+    private fun waitForRule(app: MailApp, name: String) {
+        try {
+            compose.waitUntil(5000) { runBlocking { app.database.dao().rules().any { it.name == name } } }
+        } catch (e: Exception) {
+            val visible = compose.onAllNodes(hasText("", substring = true), useUnmergedTree = true)
+                .fetchSemanticsNodes().joinToString(" | ") { it.config.toString() }
+            throw AssertionError("规则未保存：$name；当前界面语义：$visible", e)
+        }
+    }
+
+    @Test fun ruleEditorControlsPassAccessibilityChecksWithoutVirtualKeyboard() {
+        compose.onNodeWithText("规则", useUnmergedTree = true).performClick()
+        compose.onNodeWithContentDescription("新增规则").performClick()
         compose.enableAccessibilityChecks()
+        compose.onNodeWithContentDescription("插入标题变量：来源号码").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("插入标题变量：彩信主题").assertExists()
+        compose.onNodeWithContentDescription("插入标题变量：消息内容").assertExists()
     }
     @Test fun navigateAndValidateRuleEditor() {
         val app = ApplicationProvider.getApplicationContext<MailApp>()
@@ -43,18 +62,97 @@ class UiSmokeTest {
         compose.onNode(hasClickAction() and hasAnyDescendant(hasText("测试规则")), useUnmergedTree = true).performSemanticsAction(SemanticsActions.OnClick)
         compose.onNodeWithText("✓ 匹配成功，将使用所选联系人").assertExists()
         compose.onNodeWithText("保存规则").performScrollTo().performClick()
-        compose.waitUntil(5000) { compose.onAllNodesWithText("测试告警").fetchSemanticsNodes().isNotEmpty() }
+        waitForRule(app, "测试告警")
         compose.onNodeWithContentDescription("启用规则 测试告警").performClick()
         compose.onNodeWithContentDescription("启用规则 测试告警").assertIsOff()
-        compose.onNodeWithText("编辑与测试").performClick()
+        compose.onNodeWithText("编辑与测试").performScrollTo().performClick()
+        compose.waitUntil(5000) { compose.onAllNodesWithText("规则名称").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("规则名称").performTextReplacement("更新告警")
         compose.onNodeWithText("保存规则").performScrollTo().performClick()
-        compose.waitUntil(5000) { compose.onAllNodesWithText("更新告警").fetchSemanticsNodes().isNotEmpty() }
+        waitForRule(app, "更新告警")
         compose.onNodeWithText("删除").performClick()
         compose.onNodeWithText("确认").performClick()
         compose.waitUntil(5000) { compose.onAllNodesWithText("创建第一条规则").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("记录", useUnmergedTree = true).performClick()
         compose.onNodeWithText("暂无记录").assertExists()
+    }
+
+    @Test fun enableUsesFiveSavedDefaultContactsWhenLegacyAddressFieldIsEmpty() {
+        val app = ApplicationProvider.getApplicationContext<MailApp>()
+        runBlocking {
+            app.settings.defaults = ""
+            app.repository.saveMail(MailConfig("smtp.example.com", 465, "SSL", "sender@example.com", "test-only"))
+            val ids = (1..5).map { number ->
+                app.repository.saveContact(null, "收件人$number", "recipient$number@example.com", "").id
+            }
+            app.repository.saveDefaultContacts(ids)
+        }
+        compose.waitUntil(5000) { runBlocking { app.database.dao().defaultContacts().size == 5 } }
+
+        compose.onNodeWithContentDescription("短信转发总开关").performClick()
+        compose.waitUntil(5000) { app.settings.enabled }
+
+        org.junit.Assert.assertTrue(app.settings.defaults.isBlank())
+        compose.onNodeWithContentDescription("短信转发总开关").assertIsOn()
+    }
+
+    @Test fun ruleEditorCanInsertDynamicTitleVariable() {
+        val app = ApplicationProvider.getApplicationContext<MailApp>()
+        runBlocking { app.repository.saveContact(null, "标题收件人", "subject@example.com", "") }
+        compose.onNodeWithText("规则", useUnmergedTree = true).performClick()
+        compose.onNodeWithContentDescription("新增规则").performClick()
+        compose.onNodeWithText("规则名称").performTextInput("标题模板规则")
+        compose.onNodeWithText("短信正文正则").performTextInput("告警")
+        compose.onNodeWithText("邮件标题模板").performTextInput("告警通知 ")
+        compose.onNodeWithText("邮件标题模板").performImeAction()
+        compose.onNodeWithContentDescription("插入标题变量：来源号码").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("插入标题变量：消息内容").performScrollTo().performClick()
+        compose.onNode(hasClickAction() and hasAnyDescendant(hasText("选择收件联系人")), useUnmergedTree = true).performSemanticsAction(SemanticsActions.OnClick)
+        compose.waitUntil(5000) { compose.onAllNodesWithText("subject@example.com", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("subject@example.com", useUnmergedTree = true).performScrollTo().performClick()
+        compose.onNodeWithText("确认选择（1）").performClick()
+        compose.onNodeWithText("保存规则").performScrollTo().performClick()
+        compose.waitUntil(5000) { runBlocking { app.database.dao().rules().any { it.name == "标题模板规则" } } }
+        org.junit.Assert.assertEquals("告警通知 {来源号码}{消息内容}", runBlocking {
+            app.database.dao().rules().single { it.name == "标题模板规则" }.subjectTemplate
+        })
+    }
+
+    @Test fun emailMetadataSwitchesStartOffAndToggleIndependently() {
+        val app = ApplicationProvider.getApplicationContext<MailApp>()
+        compose.onNodeWithText("设置", useUnmergedTree = true).performClick()
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText("邮件正文信息"))
+        compose.onNodeWithContentDescription("邮件正文显示：来源号码").assertIsOff()
+        compose.onNodeWithContentDescription("邮件正文显示：接收时间").assertIsOff()
+        compose.onNodeWithContentDescription("邮件正文显示：短信时间").assertIsOff()
+        compose.onNodeWithContentDescription("邮件正文显示：SIM 信息").assertIsOff()
+        compose.onNodeWithContentDescription("邮件正文显示：匹配规则").assertIsOff()
+        compose.onNodeWithContentDescription("邮件正文显示：来源号码").performScrollTo().performClick()
+        compose.waitUntil(3000) { (app.settings.emailMetadataMask and EmailMetadata.SOURCE_NUMBER.bit) != 0 }
+        org.junit.Assert.assertEquals(EmailMetadata.SOURCE_NUMBER.bit, app.settings.emailMetadataMask)
+    }
+
+    @Test fun ruleOrderCanBeChangedByDraggingAndSaved() {
+        val app = ApplicationProvider.getApplicationContext<MailApp>()
+        runBlocking {
+            val one = app.repository.saveContact(null, "专项联系人", "specific@example.com", "")
+            val two = app.repository.saveContact(null, "所有联系人", "all@example.com", "")
+            app.repository.saveRuleWithContacts(RuleRow("specific", "专项验证码", "验证码", ""), listOf(one.id))
+            app.repository.saveRuleWithContacts(RuleRow("catchall", "所有消息", ".*", ""), listOf(two.id))
+        }
+        compose.onNodeWithText("规则", useUnmergedTree = true).performClick()
+        compose.onNodeWithText("调整命中顺序").performClick()
+        val handle = compose.onNodeWithContentDescription("拖动规则 所有消息")
+        handle.performTouchInput {
+            down(center)
+            advanceEventTime(700)
+            moveBy(Offset(0f, -160f))
+            advanceEventTime(100)
+            up()
+        }
+        compose.onNodeWithText("保存顺序").performClick()
+        compose.waitUntil(5000) { runBlocking { app.database.dao().rules().firstOrNull()?.id == "catchall" } }
+        org.junit.Assert.assertEquals(listOf("catchall", "specific"), runBlocking { app.database.dao().rules().map { it.id } })
     }
     @Test fun configureMailAndDefaultRecipients() {
         val app = ApplicationProvider.getApplicationContext<MailApp>()
@@ -107,6 +205,7 @@ class UiSmokeTest {
         compose.onNode(hasText("此应用不会更改默认短信应用", substring = true)).assertExists()
     }
     @Test fun manageContactsAndQuickRulePresets() {
+        val app = ApplicationProvider.getApplicationContext<MailApp>()
         compose.onNodeWithText("设置", useUnmergedTree = true).performClick()
         compose.onNodeWithText("联系人管理").performClick()
         compose.onNodeWithText("新增联系人").performClick()
@@ -128,7 +227,7 @@ class UiSmokeTest {
         compose.onNode(hasClickAction() and hasAnyDescendant(hasText("测试规则")), useUnmergedTree = true).performSemanticsAction(SemanticsActions.OnClick)
         compose.onNodeWithText("✓ 匹配成功，将使用所选联系人").assertExists()
         compose.onNodeWithText("保存规则").performScrollTo().performClick()
-        compose.waitUntil(5000) { compose.onAllNodesWithText("验证码快捷规则").fetchSemanticsNodes().isNotEmpty() }
+        waitForRule(app, "验证码快捷规则")
         compose.onNodeWithText("验证码 · 验证码、校验码、动态口令或 OTP").assertExists()
     }
     @Test fun detailsAndRetryOnlyFailedRecipient() {

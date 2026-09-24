@@ -4,12 +4,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RoutingTest {
-    @Test fun unionMatchesAndDeduplicates() {
+    @Test fun firstMatchingRuleWinsAndDeduplicatesItsRecipients() {
         val result = Router.route("业务告警：余额不足", listOf(
-            Rule("1", "告警", "告警", listOf("a@example.com", "b@example.com")),
+            Rule("1", "告警", "告警", listOf("a@example.com", "b@example.com", "A@example.com")),
             Rule("2", "余额", "余额", listOf("A@example.com"))), listOf("default@example.com"))
         assertEquals(listOf("a@example.com", "b@example.com"), result.recipients)
-        assertEquals(listOf("告警", "余额"), result.ruleNames)
+        assertEquals(listOf("告警"), result.ruleNames)
+        assertEquals("1", result.matchedRule?.id)
+    }
+
+    @Test fun disabledRulesAreSkippedBeforeFirstMatch() {
+        val result = Router.route("验证码123456", listOf(
+            Rule("disabled", "已关闭", ".*", listOf("off@example.com"), false),
+            Rule("first", "验证码", "验证码", listOf("otp@example.com")),
+            Rule("later", "所有", ".*", listOf("all@example.com"))), listOf("default@example.com"))
+        assertEquals(listOf("otp@example.com"), result.recipients)
+        assertEquals("first", result.matchedRule?.id)
+        assertEquals(listOf("验证码"), result.ruleNames)
     }
     @Test fun fallbackAndDisabled() {
         val result = Router.route("验证码123456", listOf(Rule("1", "关闭", ".*", listOf("x@example.com"), false)), listOf("default@example.com"))

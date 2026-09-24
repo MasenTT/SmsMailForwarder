@@ -1,11 +1,11 @@
 # 实现结构
 
 - `core`：与 Android 无关的分流、地址校验、指纹和重试状态策略。
-- `app/Storage.kt`：Room 持久化；短信／彩信正文、来源、主题和附件使用 Keystore AES-GCM 加密；发件配置整体加密。去重摘要使用 Keystore HMAC-SHA256。联系人存储在 `contacts`，规则和默认收件人分别通过 `rule_contacts`、`default_contacts` 关联；数据库 v3→v4 新增彩信事件字段与附件表。
-- `app/Forwarding.kt`：`SMS_RECEIVED`／`DATA_SMS_RECEIVED` → 合并短信正文 → 路由快照；短信／彩信事件、加密附件与逐收件人任务在同一事务写入 → WorkManager。
+- `app/Storage.kt`：Room 持久化；短信／彩信正文、来源、主题和附件使用 Keystore AES-GCM 加密；发件配置整体加密。去重摘要使用 Keystore HMAC-SHA256。联系人存储在 `contacts`，规则和默认收件人分别通过 `rule_contacts`、`default_contacts` 关联；数据库 v4→v5 增加规则顺序、标题模板、正文显示选项及待发标题快照字段。
+- `app/Forwarding.kt`：`SMS_RECEIVED`／`DATA_SMS_RECEIVED` → 合并短信正文 → 按规则顺序选中首条启用命中 → 接收时固定收件人、渲染标题并快照正文选项；标题支持 `{消息内容}`，空白归一后按 Unicode 码点截短至 50 字符（含省略号）；短信／彩信事件、加密附件与逐收件人任务在同一事务写入 → WorkManager。默认收件人从 `default_contacts` 关联读取；该处为空时才回退旧版文本配置。开启校验与短信路由共用这一来源。
 - `app/MmsIngestion.kt`：监听非默认短信应用可收到的 `WAP_PUSH_RECEIVED` 通知，等待当前默认短信应用下载到 Telephony MMS Provider，再读取主题、文本片段、发件人、SIM 信息和媒体附件；缺权限、未下载和读取异常写入脱敏 MMS 诊断，不切换默认短信角色。
 - `app/MailSender.kt`：单收件人 SMTP 提交，彩信以 multipart MIME 发送文本和原始附件；强制 TLS 和主机身份校验，清理附件名及 MIME 类型，错误消息固定脱敏。
-- `app/MainActivity.kt`：Material 3 四页导航与编辑、测试、详情弹窗；设置页展示独立的短信／彩信权限和诊断信息。诊断报告不含消息正文、号码、邮箱或授权码。
+- `app/MainActivity.kt`：Material 3 四页导航与编辑、测试、详情弹窗；规则页可持久化拖动排序，标题模板支持光标插入变量；设置页展示短信／彩信权限、诊断信息及默认关闭的五项正文显示开关。诊断报告不含消息正文、号码、邮箱或授权码。
 
 ## 状态与恢复
 
@@ -27,4 +27,4 @@ JVM 测试覆盖规则和重试政策；Android 集成测试使用真实 Room/Ke
 
 ## 数据库升级
 
-数据库版本 4。版本 1→2 转换去重摘要；版本 2→3 新增联系人关联和规则预设；版本 3→4 新增事件消息类型、主题、附件数量及 `event_attachments` 表。旧事件默认为 SMS，已有记录、配置、投递状态和尝试次数均保留。附件采用 AES-GCM 加密后存为 BLOB，并在事件清理时级联删除。
+数据库版本 5。版本 1→2 转换去重摘要；版本 2→3 新增联系人关联和规则预设；版本 3→4 新增事件消息类型、主题、附件数量及 `event_attachments` 表；版本 4→5 新增 `rules.sortOrder`、`rules.subjectTemplate`、`events.emailMetadataMask` 和 `deliveries.emailSubjectSnapshot`。升级时旧规则按创建时间初始化顺序；新短信的正文选项默认关闭，迁移前已排队的事件保留旧版默认显示的五项元数据，避免重试邮件正文发生变化。旧待投递标题为空并在投递时沿用系统标题；现有联系人、规则、事件、附件及投递状态和尝试次数均保留。附件采用 AES-GCM 加密后存为 BLOB，并在事件清理时级联删除。

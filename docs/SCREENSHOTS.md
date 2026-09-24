@@ -41,3 +41,10 @@
 
 ![0.2.2 首页短信和彩信状态](screenshots/19-home-0.2.2.png)
 ![0.2.2 彩信权限及系统下载说明](screenshots/18-mms-permissions-0.2.2.png)
+
+## 0.2.3 规则标题与邮件正文信息
+
+Android 15 模拟器中的 0.2.3 规则编辑页展示标题模板及可插入的动态变量；设置页展示默认关闭的五项邮件正文信息开关。截图不代表小米 14 真机验收。
+
+![0.2.3 规则标题模板和变量按钮](screenshots/20-rule-title-editor-0.2.3.png)
+![0.2.3 邮件正文信息开关（默认关闭）](screenshots/21-email-body-options-0.2.3.png)

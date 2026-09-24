@@ -18,21 +18,34 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -42,6 +55,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import cn.smsmail.core.*
 import kotlinx.coroutines.*
+import kotlin.math.abs
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {
@@ -166,6 +180,7 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
     var ruleDraftType by remember { mutableStateOf(RuleType.CUSTOM) }
     var ruleDraftExpression by remember { mutableStateOf("") }
     var ruleDraftSample by remember { mutableStateOf("") }
+    var ruleDraftSubject by remember { mutableStateOf("") }
     var editingContact by remember { mutableStateOf<ContactRow?>(null) }
     var returnToPicker by remember { mutableStateOf<String?>(null) }
     var pendingPickerSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -205,6 +220,7 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
     val configured = remember(revision) { runCatching { repo.settings.mail() != null }.getOrDefault(false) }
     val defaultSummary = defaultContacts.joinToString("、") { "${it.name}（${it.email}）" }
     val lastError = remember(revision) { repo.settings.lastError }
+    val emailMetadataMask = remember(revision) { repo.settings.emailMetadataMask }
     val smsDiagnostic = remember(revision) { repo.settings.smsDiagnostic() }
     val mmsDiagnostic = remember(revision) { repo.settings.mmsDiagnostic() }
     val active = enabled && permission
@@ -213,7 +229,7 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
     Scaffold(
         topBar = { TopAppBar(title = { Column { Text("短信 / 彩信转邮件", fontWeight = FontWeight.Bold); Text("让重要消息，及时抵达", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }) },
         bottomBar = { NavigationBar { titles.forEachIndexed { index, title -> NavigationBarItem(selected = tab == index, onClick = { tab = index }, icon = { Icon(icons[index], null) }, label = { Text(title) }) } } },
-        floatingActionButton = { if (tab == 1) FloatingActionButton(onClick = { editing = null; editingRuleWithContacts = null; pendingPickerSelection = emptySet(); ruleDraftName = ""; ruleDraftType = RuleType.CUSTOM; ruleDraftExpression = ""; ruleDraftSample = ""; dialog = "rule" }) { Icon(Icons.Outlined.Add, "新增规则") } }
+        floatingActionButton = { if (tab == 1) FloatingActionButton(onClick = { editing = null; editingRuleWithContacts = null; pendingPickerSelection = emptySet(); ruleDraftName = ""; ruleDraftType = RuleType.CUSTOM; ruleDraftExpression = ""; ruleDraftSample = ""; ruleDraftSubject = ""; dialog = "rule" }) { Icon(Icons.Outlined.Add, "新增规则") } }
     ) { padding ->
         LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             if (busy) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
@@ -231,7 +247,7 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
                                     }
                                     Switch(checked = enabled, enabled = !busy, onCheckedChange = { value -> action { repo.setEnabled(value) } }, modifier = Modifier.semanticsLabel("短信转发总开关"))
                                 }
-                                Text("全部命中 · 收件人去重 · 无匹配时默认转发", style = MaterialTheme.typography.labelMedium)
+                                Text("按顺序匹配 · 首条命中生效 · 无匹配时默认转发", style = MaterialTheme.typography.labelMedium)
                             }
                         }
                     }
@@ -258,16 +274,23 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
                     item { Text("后台发送受系统省电策略影响。验证码能否接收，取决于系统权限与设备。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
                 1 -> {
-                    item { Text("转发规则", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); Text("所有启用规则同时匹配，收件邮箱自动去重。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("转发规则", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                            Text("按列表顺序检查；第一条启用且命中的规则生效，后续规则跳过。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            OutlinedButton(onClick = { dialog = "ruleOrder" }, enabled = rules.size > 1 && !busy) { Text("调整命中顺序") }
+                        }
+                    }
                     item { Panel { Text("默认去向", fontWeight = FontWeight.Bold); Text(defaultSummary.ifBlank { "尚未设置默认收件人" }); Text("没有匹配到规则的短信，将发送至这里。", style = MaterialTheme.typography.bodySmall); TextButton(onClick = { dialog = "defaultPicker" }) { Text("管理默认收件人") } } }
                     if (rules.isEmpty()) item { EmptyCard("创建第一条规则", "例如：包含“告警”的短信 → 工作邮箱。点击右下角添加。") }
-                    items(rules, key = { it.rule.id }) { item ->
+                    itemsIndexed(rules, key = { _, item -> item.rule.id }) { index, item ->
                         Panel {
-                            Row(verticalAlignment = Alignment.CenterVertically) { Text(item.rule.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Switch(item.rule.enabled, onCheckedChange = { value -> action { repo.dao.saveRule(item.rule.copy(enabled = value)) } }, enabled = !busy, modifier = Modifier.semanticsLabel("启用规则 ${item.rule.name}")) }
+                            Row(verticalAlignment = Alignment.CenterVertically) { Text("${index + 1}. ${item.rule.name}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Switch(item.rule.enabled, onCheckedChange = { value -> action { repo.dao.saveRule(item.rule.copy(enabled = value)) } }, enabled = !busy, modifier = Modifier.semanticsLabel("启用规则 ${item.rule.name}")) }
                             Text("${ruleTypeLabel(item.rule.type)} · ${RulePresets.description(runCatching { RuleType.valueOf(item.rule.type) }.getOrDefault(RuleType.CUSTOM))}", color = MaterialTheme.colorScheme.primary)
                             Icon(Icons.AutoMirrored.Outlined.ArrowForward, null, Modifier.size(20.dp))
                             Text(item.contacts.joinToString("、") { "${it.name}（${it.email}）" }.ifBlank { item.rule.recipients })
-                            Row { TextButton(onClick = { editingRuleWithContacts = item; pendingPickerSelection = item.contacts.map { it.id }.toSet(); ruleDraftName = item.rule.name; ruleDraftType = runCatching { RuleType.valueOf(item.rule.type) }.getOrDefault(RuleType.CUSTOM); ruleDraftExpression = item.rule.expression; ruleDraftSample = ""; dialog = "rule" }) { Text("编辑与测试") }; TextButton(onClick = { editing = item.rule; dialog = "deleteRule" }) { Text("删除", color = MaterialTheme.colorScheme.error) } }
+                            Text("邮件标题：${item.rule.subjectTemplate.ifBlank { "系统默认" }}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row { TextButton(onClick = { editingRuleWithContacts = item; pendingPickerSelection = item.contacts.map { it.id }.toSet(); ruleDraftName = item.rule.name; ruleDraftType = runCatching { RuleType.valueOf(item.rule.type) }.getOrDefault(RuleType.CUSTOM); ruleDraftExpression = item.rule.expression; ruleDraftSample = ""; ruleDraftSubject = item.rule.subjectTemplate; dialog = "rule" }) { Text("编辑与测试") }; TextButton(onClick = { editing = item.rule; dialog = "deleteRule" }) { Text("删除", color = MaterialTheme.colorScheme.error) } }
                         }
                     }
                     item { Spacer(Modifier.height(64.dp)) }
@@ -280,6 +303,30 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
                 3 -> {
                     item { Text("设置", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold) }
                     item { Panel { Text("邮件与收件人", fontWeight = FontWeight.Bold); SettingButton("发件邮箱", if (configured) "已配置 · 查看或修改" else "QQ / 163 / 自定义 SMTP") { dialog = "mail" }; SettingButton("默认收件人", defaultSummary.ifBlank { "未设置" }) { dialog = "defaultPicker" }; SettingButton("联系人管理", if (contacts.isEmpty()) "新增姓名、邮箱和备注" else "已维护 ${contacts.size} 个联系人") { dialog = "contacts" }; SettingButton("发送测试邮件", "保存发件配置后，验证邮箱连接") { dialog = "test" } } }
+                    item {
+                        Panel {
+                            Text("邮件正文信息", fontWeight = FontWeight.Bold)
+                            Text("短信和彩信共用这些开关；消息正文始终保留，彩信主题和附件照常转发。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            EmailMetadata.values().forEach { option ->
+                                val label = when (option) {
+                                    EmailMetadata.SOURCE_NUMBER -> "来源号码"
+                                    EmailMetadata.RECEIVED_TIME -> "接收时间"
+                                    EmailMetadata.MESSAGE_TIME -> "短信时间（彩信显示彩信时间）"
+                                    EmailMetadata.SIM_INFO -> "SIM 信息"
+                                    EmailMetadata.MATCHED_RULE -> "匹配规则"
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(label, modifier = Modifier.weight(1f))
+                                    Switch(
+                                        checked = (emailMetadataMask and option.bit) != 0,
+                                        onCheckedChange = { value -> action { repo.settings.setEmailMetadataVisible(option, value) } },
+                                        enabled = !busy,
+                                        modifier = Modifier.semantics { contentDescription = "邮件正文显示：${label.substringBefore("（")}" }
+                                    )
+                                }
+                            }
+                        }
+                    }
                     item {
                         Panel {
                             Text("运行权限", fontWeight = FontWeight.Bold)
@@ -322,7 +369,7 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
                             }) { Text("复制诊断信息") }
                         }
                     }
-                    item { Panel { Text("数据与隐私", fontWeight = FontWeight.Bold); Text("短信和彩信正文、来源号码、彩信主题与媒体附件、SMTP 授权码在本机加密保存；联系人邮箱和规则名称作为本地配置保存。邮件直接发送至你配置的邮箱，不经过其他服务器。卸载将删除本机记录和配置。", style = MaterialTheme.typography.bodyMedium); TextButton(onClick = { dialog = "clear" }) { Text("清空已完成记录", color = MaterialTheme.colorScheme.error) }; Text("版本 0.2.2 · 彩信附件转发", style = MaterialTheme.typography.labelSmall) } }
+                    item { Panel { Text("数据与隐私", fontWeight = FontWeight.Bold); Text("短信和彩信正文、来源号码、彩信主题与媒体附件、SMTP 授权码在本机加密保存；联系人邮箱和规则名称作为本地配置保存。邮件直接发送至你配置的邮箱，不经过其他服务器。卸载将删除本机记录和配置。", style = MaterialTheme.typography.bodyMedium); TextButton(onClick = { dialog = "clear" }) { Text("清空已完成记录", color = MaterialTheme.colorScheme.error) }; Text("版本 0.2.5 · 邮件标题内容变量", style = MaterialTheme.typography.labelSmall) } }
                 }
             }
         }
@@ -332,7 +379,8 @@ fun buildSmsDiagnosticReport(context: android.content.Context, repo: Repository,
         "mail" -> MailEditor(runCatching { repo.settings.mail() }.getOrNull(), busy, { dialog = null }) { config -> action { repo.saveMail(config); withContext(Dispatchers.Main) { dialog = null; notice = "发件配置已保存" } } }
         "defaultPicker" -> ContactPicker("默认收件人", contacts, (if (pendingPickerSelection.isNotEmpty()) pendingPickerSelection else defaultContacts.map { it.id }.toSet()), true, busy, { dialog = null }, { ids -> action { repo.saveDefaultContacts(ids.toList()); withContext(Dispatchers.Main) { pendingPickerSelection = emptySet(); dialog = null; notice = "默认收件人已保存" } } }, { returnToPicker = "defaultPicker"; pendingPickerSelection = it; editingContact = null; dialog = "contact" })
         "test" -> ContactPicker("发送测试邮件", contacts, pendingPickerSelection, false, busy, { dialog = null }, { ids -> action { val recipient = ids.singleOrNull()?.let { repo.dao.contact(it)?.email } ?: error("请先选择联系人"); val result = repo.testMail(recipient); withContext(Dispatchers.Main) { pendingPickerSelection = emptySet(); dialog = null; notice = result.detail } } }, { returnToPicker = "test"; pendingPickerSelection = it; editingContact = null; dialog = "contact" })
-        "rule" -> RuleEditor(editingRuleWithContacts, contacts, ruleDraftName, { ruleDraftName = it }, ruleDraftType, { value -> ruleDraftType = value }, ruleDraftExpression, { ruleDraftExpression = it }, ruleDraftSample, { ruleDraftSample = it }, pendingPickerSelection, busy, { dialog = null }, { dialog = "rulePicker" }) { row, ids -> action { repo.saveRuleWithContacts(row, ids); withContext(Dispatchers.Main) { pendingPickerSelection = emptySet(); dialog = null } } }
+        "rule" -> RuleEditor(editingRuleWithContacts, contacts, ruleDraftName, { ruleDraftName = it }, ruleDraftType, { value -> ruleDraftType = value }, ruleDraftExpression, { ruleDraftExpression = it }, ruleDraftSubject, { ruleDraftSubject = it }, ruleDraftSample, { ruleDraftSample = it }, pendingPickerSelection, busy, { dialog = null }, { dialog = "rulePicker" }) { row, ids -> action { repo.saveRuleWithContacts(row, ids); withContext(Dispatchers.Main) { pendingPickerSelection = emptySet(); dialog = null } } }
+        "ruleOrder" -> RuleOrderEditor(rules, busy, { dialog = null }) { ids -> action { repo.reorderRules(ids); withContext(Dispatchers.Main) { dialog = null; notice = "规则优先顺序已保存" } } }
         "rulePicker" -> ContactPicker("选择规则收件人", contacts, pendingPickerSelection, true, busy, { dialog = "rule" }, { ids -> pendingPickerSelection = ids; dialog = "rule" }, { returnToPicker = "rulePicker"; pendingPickerSelection = it; editingContact = null; dialog = "contact" })
         "contacts" -> ContactsManager(contacts, busy, { dialog = null }, { editingContact = it; dialog = "contact" }, { editingContact = it; dialog = "deleteContact" }, { editingContact = null; returnToPicker = null; dialog = "contact" })
         "contact" -> ContactEditor(editingContact, busy, { dialog = if (returnToPicker != null) returnToPicker else "contacts" }) { id, name, email, note -> action { val saved = repo.saveContact(id, name, email, note); withContext(Dispatchers.Main) { if (returnToPicker != null) { pendingPickerSelection = pendingPickerSelection + saved.id; val next = returnToPicker; returnToPicker = null; dialog = next } else { dialog = "contacts" }; editingContact = null; notice = "联系人已保存" } } }
@@ -396,7 +444,7 @@ fun stateLabel(state: String) = when (state) { "PENDING" -> "等待发送"; "SEN
 @Composable fun Confirm(title: String, message: String, dismiss: () -> Unit, confirm: () -> Unit) { AlertDialog(onDismissRequest = dismiss, title = { Text(title) }, text = { Text(message) }, confirmButton = { TextButton(onClick = confirm) { Text("确认") } }, dismissButton = { TextButton(onClick = dismiss) { Text("取消") } }) }
 @Composable fun SheetDialog(title: String, dismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxWidth().padding(16.dp).heightIn(max = 700.dp).imePadding(), shape = RoundedCornerShape(24.dp)) {
+        Surface(Modifier.fillMaxWidth().padding(16.dp).heightIn(max = 600.dp).imePadding(), shape = RoundedCornerShape(24.dp)) {
             Column(Modifier.verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) { Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f)); IconButton(onClick = dismiss) { Icon(Icons.Outlined.Close, "关闭") } }
                 content()
@@ -440,10 +488,21 @@ fun ruleTypeLabel(type: String): String = when (runCatching { RuleType.valueOf(t
     RuleType.CUSTOM -> "自定义"
 }
 
-@Composable fun RuleEditor(initial: RuleWithContacts?, contacts: List<ContactRow>, name: String, onNameChange: (String) -> Unit, type: RuleType, onTypeChange: (RuleType) -> Unit, expression: String, onExpressionChange: (String) -> Unit, sample: String, onSampleChange: (String) -> Unit, selectedIds: Set<String>, busy: Boolean, dismiss: () -> Unit, openPicker: () -> Unit, save: (RuleRow, List<String>) -> Unit) {
+@OptIn(ExperimentalLayoutApi::class)
+@Composable fun RuleEditor(initial: RuleWithContacts?, contacts: List<ContactRow>, name: String, onNameChange: (String) -> Unit, type: RuleType, onTypeChange: (RuleType) -> Unit, expression: String, onExpressionChange: (String) -> Unit, subjectTemplate: String, onSubjectTemplateChange: (String) -> Unit, sample: String, onSampleChange: (String) -> Unit, selectedIds: Set<String>, busy: Boolean, dismiss: () -> Unit, openPicker: () -> Unit, save: (RuleRow, List<String>) -> Unit) {
     var result by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
+    var titleValue by remember { mutableStateOf(TextFieldValue(subjectTemplate)) }
+    val focusManager = LocalFocusManager.current
+    LaunchedEffect(subjectTemplate) {
+        if (titleValue.text != subjectTemplate) titleValue = TextFieldValue(subjectTemplate, TextRange(subjectTemplate.length))
+    }
     val actualExpression = RulePresets.expression(type, expression.takeIf { type == RuleType.CUSTOM })
+    val titleVariables = listOf(
+        "来源号码" to "{来源号码}", "接收时间" to "{接收时间}", "消息时间" to "{消息时间}",
+        "SIM信息" to "{SIM信息}", "匹配规则" to "{匹配规则}", "消息类型" to "{消息类型}",
+        "消息内容" to "{消息内容}", "彩信主题" to "{彩信主题}"
+    )
     SheetDialog(if (initial == null) "新增规则" else "编辑规则", dismiss) {
         OutlinedTextField(name, onNameChange, label = { Text("规则名称") }, modifier = Modifier.fillMaxWidth())
         Text("快速配置", style = MaterialTheme.typography.labelLarge)
@@ -453,6 +512,35 @@ fun ruleTypeLabel(type: String): String = when (runCatching { RuleType.valueOf(t
         Text(RulePresets.description(type), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (type == RuleType.CUSTOM) OutlinedTextField(expression, { onExpressionChange(it); result = "" }, label = { Text("短信正文正则") }, supportingText = { Text("包含匹配，例如：告警|故障。RE2 语法，不支持回溯引用或环视。") }, modifier = Modifier.fillMaxWidth())
         else TextButton(onClick = { onTypeChange(RuleType.CUSTOM); onExpressionChange(actualExpression); result = "" }) { Text("基于此模板自定义") }
+        OutlinedTextField(
+            value = titleValue,
+            onValueChange = { titleValue = it; onSubjectTemplateChange(it.text) },
+            label = { Text("邮件标题模板") },
+            supportingText = { Text("留空使用系统默认标题；{消息内容}会合并换行并截短为最多 50 个 Unicode 码点（含省略号）。标题可能显示在邮件通知中。") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
+            modifier = Modifier.fillMaxWidth()
+        )
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            titleVariables.forEach { (label, token) ->
+                TextButton(
+                    onClick = {
+                        val start = titleValue.selection.min
+                        val end = titleValue.selection.max
+                        val updated = titleValue.text.replaceRange(start, end, token)
+                        val cursor = start + token.length
+                        titleValue = TextFieldValue(updated, TextRange(cursor))
+                        onSubjectTemplateChange(updated)
+                    },
+                    modifier = Modifier.semantics { contentDescription = "插入标题变量：$label" }
+                ) { Text(label) }
+            }
+        }
         OutlinedButton(onClick = openPicker, modifier = Modifier.fillMaxWidth()) { Text(if (selectedIds.isEmpty()) "选择收件联系人" else "已选择 ${selectedIds.size} 个收件联系人") }
         contacts.filter { it.id in selectedIds }.forEach { Text("${it.name}（${it.email}）", style = MaterialTheme.typography.bodySmall) }
         HorizontalDivider()
@@ -464,11 +552,95 @@ fun ruleTypeLabel(type: String): String = when (runCatching { RuleType.valueOf(t
             try {
                 require(name.trim().isNotBlank()) { "请填写规则名称" }
                 require(Router.regexError(actualExpression) == null) { Router.regexError(actualExpression)!! }
+                require(titleValue.text.length <= 200) { "邮件标题模板不能超过 200 个字符" }
                 require(selectedIds.isNotEmpty()) { "请至少选择一个收件联系人" }
-                val row = RuleRow(initial?.rule?.id ?: UUID.randomUUID().toString(), name.trim(), actualExpression, contacts.filter { it.id in selectedIds }.joinToString("\n") { it.email }, initial?.rule?.enabled ?: true, initial?.rule?.createdAt ?: System.currentTimeMillis(), type.name, RulePresets.VERSION)
+                val row = RuleRow(initial?.rule?.id ?: UUID.randomUUID().toString(), name.trim(), actualExpression, contacts.filter { it.id in selectedIds }.joinToString("\n") { it.email }, initial?.rule?.enabled ?: true, initial?.rule?.createdAt ?: System.currentTimeMillis(), type.name, RulePresets.VERSION, subjectTemplate = titleValue.text.trim())
                 save(row, selectedIds.toList())
             } catch (e: IllegalArgumentException) { error = e.message.orEmpty() }
         }) { Text("保存规则") }
+    }
+}
+
+@Composable fun RuleOrderEditor(
+    rules: List<RuleWithContacts>,
+    busy: Boolean,
+    dismiss: () -> Unit,
+    save: (List<String>) -> Unit
+) {
+    var ordered by remember(rules) { mutableStateOf(rules) }
+    val latestOrder by rememberUpdatedState(ordered)
+    val listState = rememberLazyListState()
+    var draggedId by remember { mutableStateOf<String?>(null) }
+    var dragOffset by remember { mutableFloatStateOf(0f) }
+
+    fun move(from: Int, to: Int) {
+        if (from == to || from !in ordered.indices || to !in ordered.indices) return
+        ordered = ordered.toMutableList().apply { add(to, removeAt(from)) }
+    }
+
+    Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxWidth().padding(20.dp).heightIn(max = 680.dp), shape = RoundedCornerShape(24.dp)) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("调整命中顺序", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("长按拖动规则；排在前面的启用规则先匹配，首条命中后后续规则不再处理。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    itemsIndexed(ordered, key = { _, item -> "priority-${item.rule.id}" }) { index, item ->
+                        val key = "priority-${item.rule.id}"
+                        Card(
+                            modifier = Modifier.fillMaxWidth().graphicsLayer { translationY = if (draggedId == item.rule.id) dragOffset else 0f },
+                            colors = CardDefaults.cardColors(containerColor = if (draggedId == item.rule.id) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+                                Box(
+                                    Modifier.size(48.dp)
+                                        .semantics { contentDescription = "拖动规则 ${item.rule.name}" }
+                                        .pointerInput(key) {
+                                            detectDragGesturesAfterLongPress(
+                                                onDragStart = { draggedId = item.rule.id; dragOffset = 0f },
+                                                onDragEnd = { draggedId = null; dragOffset = 0f },
+                                                onDragCancel = { draggedId = null; dragOffset = 0f },
+                                                onDrag = { change, amount ->
+                                                    change.consume()
+                                                    if (draggedId != item.rule.id) return@detectDragGesturesAfterLongPress
+                                                    dragOffset += amount.y
+                                                    val currentInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key } ?: return@detectDragGesturesAfterLongPress
+                                                    val center = currentInfo.offset + dragOffset + currentInfo.size / 2f
+                                                    val targets = listState.layoutInfo.visibleItemsInfo.filter { info ->
+                                                        info.key is String && info.key.toString().startsWith("priority-") && info.key != key
+                                                    }
+                                                    val target = targets.minByOrNull { abs(it.offset + it.size / 2f - center) } ?: return@detectDragGesturesAfterLongPress
+                                                    val targetCenter = target.offset + target.size / 2f
+                                                    val from = latestOrder.indexOfFirst { "priority-${it.rule.id}" == key }
+                                                    val to = latestOrder.indexOfFirst { "priority-${it.rule.id}" == target.key }
+                                                    if (to >= 0 && from >= 0 && to != from && abs(targetCenter - center) <= target.size / 2f) {
+                                                        ordered = latestOrder.toMutableList().apply { add(to, removeAt(from)) }
+                                                        dragOffset -= target.offset - currentInfo.offset
+                                                    }
+                                                }
+                                            )
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) { Icon(Icons.Outlined.DragHandle, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                Column(Modifier.weight(1f)) {
+                                    Text("${index + 1}. ${item.rule.name}", fontWeight = FontWeight.SemiBold)
+                                    Text(if (item.rule.enabled) "启用" else "已停用", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                IconButton(onClick = { move(index, index - 1) }, enabled = index > 0 && !busy, modifier = Modifier.semanticsLabel("上移规则 ${item.rule.name}")) {
+                                    Icon(Icons.Outlined.KeyboardArrowUp, "上移")
+                                }
+                                IconButton(onClick = { move(index, index + 1) }, enabled = index < ordered.lastIndex && !busy, modifier = Modifier.semanticsLabel("下移规则 ${item.rule.name}")) {
+                                    Icon(Icons.Outlined.KeyboardArrowDown, "下移")
+                                }
+                            }
+                        }
+                    }
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = dismiss, enabled = !busy) { Text("取消") }
+                    Button(onClick = { save(ordered.map { it.rule.id }) }, enabled = !busy) { Text("保存顺序") }
+                }
+            }
+        }
     }
 }
 

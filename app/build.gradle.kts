@@ -10,8 +10,8 @@ android {
         applicationId = "cn.smsmail.forwarder"
         minSdk = 26
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.2.2"
+        versionCode = 8
+        versionName = "0.2.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

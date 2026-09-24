@@ -76,6 +76,14 @@ class Crypto {
 data class SmsDiagnostic(val receivedAt: Long, val partCount: Int, val bodyLength: Int, val status: String)
 data class MmsDiagnostic(val receivedAt: Long, val textPartCount: Int, val attachmentCount: Int, val status: String)
 
+enum class EmailMetadata(val bit: Int) {
+    SOURCE_NUMBER(1 shl 0),
+    RECEIVED_TIME(1 shl 1),
+    MESSAGE_TIME(1 shl 2),
+    SIM_INFO(1 shl 3),
+    MATCHED_RULE(1 shl 4)
+}
+
 class Settings(context: Context, private val crypto: Crypto) {
     private val prefs = context.getSharedPreferences("private_settings", Context.MODE_PRIVATE)
     val changes = MutableStateFlow(0)
@@ -88,6 +96,18 @@ class Settings(context: Context, private val crypto: Crypto) {
     var lastError: String
         get() = prefs.getString("last_error", "")!!
         set(value) { check(prefs.edit().putString("last_error", value).commit()); changed() }
+    var emailMetadataMask: Int
+        get() = prefs.getInt("email_metadata_mask", 0)
+        set(value) {
+            val validBits = EmailMetadata.values().fold(0) { mask, item -> mask or item.bit }
+            require((value and validBits.inv()) == 0) { "邮件正文显示选项无效" }
+            check(prefs.edit().putInt("email_metadata_mask", value).commit())
+            changed()
+        }
+    fun setEmailMetadataVisible(item: EmailMetadata, visible: Boolean) {
+        val current = emailMetadataMask
+        emailMetadataMask = if (visible) current or item.bit else current and item.bit.inv()
+    }
     fun smsDiagnostic(): SmsDiagnostic = SmsDiagnostic(
         prefs.getLong("sms_diag_at", 0L),
         prefs.getInt("sms_diag_parts", 0),
@@ -147,7 +167,9 @@ data class RuleRow(
     val enabled: Boolean = true,
     val createdAt: Long = System.currentTimeMillis(),
     val type: String = RuleType.CUSTOM.name,
-    val templateVersion: Int = RulePresets.VERSION
+    val templateVersion: Int = RulePresets.VERSION,
+    @ColumnInfo(defaultValue = "2147483647") val sortOrder: Int = Int.MAX_VALUE,
+    @ColumnInfo(defaultValue = "''") val subjectTemplate: String = ""
 )
 
 @Entity(
@@ -180,9 +202,10 @@ data class RuleWithContacts(
 data class EventRow(@PrimaryKey val id: String, val fingerprint: String, val source: String, val body: String, val receivedAt: Long, val smsAt: Long, val sim: String, val matchedRules: String,
                     @ColumnInfo(defaultValue = "'SMS'") val kind: String = MessageKind.SMS,
                     @ColumnInfo(defaultValue = "''") val subject: String = "",
-                    @ColumnInfo(defaultValue = "0") val attachmentCount: Int = 0)
+                    @ColumnInfo(defaultValue = "0") val attachmentCount: Int = 0,
+                    @ColumnInfo(defaultValue = "0") val emailMetadataMask: Int = 0)
 @Entity(tableName = "deliveries", foreignKeys = [ForeignKey(entity = EventRow::class, parentColumns = ["id"], childColumns = ["eventId"], onDelete = ForeignKey.CASCADE)], indices = [Index("eventId")])
-data class DeliveryRow(@PrimaryKey val id: String, val eventId: String, val recipient: String, val state: String = "PENDING", val attempts: Int = 0, val detail: String = "等待发送", val updatedAt: Long = System.currentTimeMillis())
+data class DeliveryRow(@PrimaryKey val id: String, val eventId: String, val recipient: String, val state: String = "PENDING", val attempts: Int = 0, val detail: String = "等待发送", val updatedAt: Long = System.currentTimeMillis(), @ColumnInfo(defaultValue = "''") val emailSubjectSnapshot: String = "")
 @Entity(tableName = "event_attachments", foreignKeys = [ForeignKey(entity = EventRow::class, parentColumns = ["id"], childColumns = ["eventId"], onDelete = ForeignKey.CASCADE)], indices = [Index("eventId")])
 data class AttachmentRow(@PrimaryKey val id: String, val eventId: String, val fileName: String, val contentType: String, val content: ByteArray)
 
@@ -204,11 +227,13 @@ data class EventWithDeliveries(@Embedded val event: EventRow, @Relation(parentCo
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun replaceRuleLinks(links: List<RuleContactCrossRef>)
     @Query("DELETE FROM rule_contacts WHERE ruleId=:ruleId") suspend fun clearRuleLinks(ruleId: String)
     @Query("SELECT * FROM rule_contacts WHERE ruleId=:ruleId") suspend fun ruleLinks(ruleId: String): List<RuleContactCrossRef>
-    @Transaction @Query("SELECT * FROM rules ORDER BY createdAt") fun observeRulesWithContacts(): Flow<List<RuleWithContacts>>
-    @Transaction @Query("SELECT * FROM rules ORDER BY createdAt") suspend fun rulesWithContacts(): List<RuleWithContacts>
-    @Query("SELECT * FROM rules ORDER BY createdAt") fun observeRules(): Flow<List<RuleRow>>
-    @Query("SELECT * FROM rules ORDER BY createdAt") suspend fun rules(): List<RuleRow>
+    @Transaction @Query("SELECT * FROM rules ORDER BY sortOrder, createdAt, id") fun observeRulesWithContacts(): Flow<List<RuleWithContacts>>
+    @Transaction @Query("SELECT * FROM rules ORDER BY sortOrder, createdAt, id") suspend fun rulesWithContacts(): List<RuleWithContacts>
+    @Query("SELECT * FROM rules ORDER BY sortOrder, createdAt, id") fun observeRules(): Flow<List<RuleRow>>
+    @Query("SELECT * FROM rules ORDER BY sortOrder, createdAt, id") suspend fun rules(): List<RuleRow>
+    @Query("SELECT * FROM rules WHERE id=:id") suspend fun rule(id: String): RuleRow?
     @Upsert suspend fun saveRule(rule: RuleRow)
+    @Query("UPDATE rules SET sortOrder=:order WHERE id=:id") suspend fun setRuleSortOrder(id: String, order: Int)
     @Query("DELETE FROM rules WHERE id=:id") suspend fun deleteRule(id: String)
     @Transaction @Query("SELECT * FROM events ORDER BY receivedAt DESC") fun observeEvents(): Flow<List<EventWithDeliveries>>
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertEvent(event: EventRow): Long
@@ -284,5 +309,24 @@ fun mmsMigration(): Migration = object : Migration(3, 4) {
     }
 }
 
-@Database(entities = [ContactRow::class, RuleRow::class, RuleContactCrossRef::class, DefaultContactCrossRef::class, EventRow::class, DeliveryRow::class, AttachmentRow::class], version = 4, exportSchema = true)
+fun mailCustomizationMigration(): Migration = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE rules ADD COLUMN sortOrder INTEGER NOT NULL DEFAULT 2147483647")
+        db.execSQL("ALTER TABLE rules ADD COLUMN subjectTemplate TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE events ADD COLUMN emailMetadataMask INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE deliveries ADD COLUMN emailSubjectSnapshot TEXT NOT NULL DEFAULT ''")
+        // Before 0.2.3 every email included these fields. Preserve already queued
+        // or retriable events; new events still use the column default of 0.
+        val legacyMetadataMask = EmailMetadata.values().fold(0) { mask, item -> mask or item.bit }
+        db.execSQL("UPDATE events SET emailMetadataMask = ?", arrayOf(legacyMetadataMask))
+        var order = 0
+        db.query("SELECT id FROM rules ORDER BY createdAt, id").use { rows ->
+            while (rows.moveToNext()) {
+                db.execSQL("UPDATE rules SET sortOrder=? WHERE id=?", arrayOf<Any>(order++, rows.getString(0)))
+            }
+        }
+    }
+}
+
+@Database(entities = [ContactRow::class, RuleRow::class, RuleContactCrossRef::class, DefaultContactCrossRef::class, EventRow::class, DeliveryRow::class, AttachmentRow::class], version = 5, exportSchema = true)
 abstract class MailDatabase : RoomDatabase() { abstract fun dao(): MailDao }
