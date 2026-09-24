@@ -2,10 +2,10 @@
   "file": "短信转邮件-0.2.5-调试版.apk（Downloads 交付文件）",
   "bytes": 18962222,
   "sha256": "4418f9992f6656a718ece7f452eb997d7d98b86a77fdaeca5aec044ae6dd0b8a",
-  "sourceArchive": "SmsMailForwarder-0.2.5-source.zip（Downloads 交付文件）",
+  "sourceArchive": null,
   "sourceBytes": null,
-  "sourceSha256": "构建后填写",
-  "sourceArchiveNote": "Downloads 中现有源码包仍为 0.2.2；最新 0.2.5 源码将发布到 GitHub main。",
+  "sourceSha256": null,
+  "sourceArchiveNote": "本次 0.2.5 源码通过 GitHub 仓库 main 发布；Downloads 中现有源码 ZIP 仍为 0.2.2，不作为本次源码交付。",
   "version": "0.2.5",
   "versionCode": 8,
   "databaseVersion": 5,
@@ -26,6 +26,6 @@
   "emulatorInstall": "Android 15 SmsMailTest: install -r, force-stop, and cold launch passed",
   "githubRepository": "https://github.com/MasenTT/SmsMailForwarder",
   "githubBranch": "main",
-  "githubPublication": "Version 0.2.2 published on 2026-09-23; version 0.2.5 GitHub publication is pending final push.",
-  "status": "Version 0.2.5 adds {消息内容} to per-rule mail subject templates. It normalizes whitespace and truncates to 50 Unicode code points including the ellipsis. Full build, lint (0 errors, 22 warnings), 59 automated tests, APK v2 signature, Android 15 emulator install, force-stop, and cold launch passed. GitHub push is pending. Xiaomi 14 real-device SMS/MMS delivery, actual mailbox delivery, and TalkBack remain unverified."
+  "githubPublication": "Version 0.2.5 published to main on 2026-09-24; source commit 66338dfae26edf2163cb1600f4996fecb750999b.",
+  "status": "Version 0.2.5 adds {消息内容} to per-rule mail subject templates. It normalizes whitespace and truncates to 50 Unicode code points including the ellipsis. Full build, lint (0 errors, 22 warnings), 59 automated tests, APK v2 signature, Android 15 emulator install, force-stop, and cold launch passed. Source is published on GitHub main at commit 66338dfae26edf2163cb1600f4996fecb750999b. Xiaomi 14 real-device SMS/MMS delivery, actual mailbox delivery, and TalkBack remain unverified."
 }
